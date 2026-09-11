@@ -11,22 +11,37 @@ const querySchema = z.object({
     .default("all"),
 });
 
+// Sem contato cadastrado, o nome vem de quem escreveu por último; um JID "@lid"
+// não é telefone, então não vira número na tela.
+const contactColumns = `
+  coalesce(ct.name,(SELECT sender_name FROM messages lm WHERE lm.conversation_id=c.id AND lm.direction='inbound' AND lm.sender_name<>'' ORDER BY lm.sent_at DESC LIMIT 1),
+    CASE WHEN c.remote_jid LIKE '%@s.whatsapp.net' THEN '+'||split_part(c.remote_jid,'@',1) WHEN c.remote_jid LIKE '%@g.us' THEN 'Grupo' ELSE 'Contato' END) AS contact_name,
+  coalesce(ct.phone,CASE WHEN c.remote_jid LIKE '%@s.whatsapp.net' THEN '+'||split_part(split_part(c.remote_jid,'@',1),':',1) END) AS contact_phone`;
+
 export async function inboxRoutes(app: FastifyInstance) {
   app.get("/api/inbox", { preHandler: allow("inbox:read") }, async (req) => {
     const { q, status } = querySchema.parse(req.query);
     const search = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
     return transaction(req.user.tenantId, async (db) => {
       const { rows } = await db.query(
-        `SELECT c.id,c.protocol,c.status,c.unread_count,c.last_message_at,c.last_message_preview,c.last_message_from_me,c.remote_jid,
-          c.assignee_id,c.department_id,coalesce(ct.name,split_part(c.remote_jid,'@',1)) AS contact_name,
-          coalesce(ct.phone,split_part(c.remote_jid,'@',1)) AS contact_phone, m.name AS assignee_name,d.name AS department_name
+        `SELECT c.id,c.protocol,c.status,c.unread_count,c.last_message_at,c.last_message_preview,c.last_message_from_me,
+          c.remote_jid LIKE '%@g.us' AS is_group,c.assignee_id,c.department_id,${contactColumns},
+          m.name AS assignee_name,d.name AS department_name
          FROM conversations c LEFT JOIN contacts ct ON ct.id=c.contact_id LEFT JOIN memberships am ON am.id=c.assignee_id
          LEFT JOIN identities m ON m.id=am.user_id LEFT JOIN departments d ON d.id=c.department_id
          WHERE ($1='all' OR c.status=$1) AND (coalesce(ct.name,'') ILIKE $2 OR coalesce(ct.phone,'') ILIKE $2 OR c.protocol ILIKE $2 OR c.last_message_preview ILIKE $2)
          ORDER BY c.last_message_at DESC NULLS LAST,c.updated_at DESC LIMIT 100`,
         [status, search],
       );
-      return { items: rows };
+      const { rows: counts } = await db.query(
+        "SELECT status,count(*)::int AS total FROM conversations GROUP BY status",
+      );
+      return {
+        items: rows,
+        counts: Object.fromEntries(
+          counts.map((row) => [row.status, row.total]),
+        ) as Record<string, number>,
+      };
     });
   });
 
@@ -37,8 +52,7 @@ export async function inboxRoutes(app: FastifyInstance) {
       const conversationId = z.uuid().parse((req.params as { id: string }).id);
       return transaction(req.user.tenantId, async (db) => {
         const { rows } = await db.query(
-          `SELECT c.id,c.protocol,c.status,c.unread_count,c.remote_jid,coalesce(ct.name,split_part(c.remote_jid,'@',1)) AS contact_name,
-          coalesce(ct.phone,split_part(c.remote_jid,'@',1)) AS contact_phone,ct.id AS contact_id,
+          `SELECT c.id,c.protocol,c.status,c.unread_count,c.remote_jid LIKE '%@g.us' AS is_group,${contactColumns},ct.id AS contact_id,
           c.assignee_id,c.department_id,m.name AS assignee_name,d.name AS department_name
          FROM conversations c LEFT JOIN contacts ct ON ct.id=c.contact_id LEFT JOIN memberships am ON am.id=c.assignee_id
          LEFT JOIN identities m ON m.id=am.user_id LEFT JOIN departments d ON d.id=c.department_id WHERE c.id=$1`,

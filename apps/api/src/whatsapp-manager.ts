@@ -220,6 +220,8 @@ function normalizeIncoming(message: any) {
   return {
     externalId: String(message.key.id),
     remoteJid: String(message.key.remoteJid),
+    // Contas novas chegam como "@lid"; o número real vem em remoteJidAlt.
+    phoneJid: message.key.remoteJidAlt ? String(message.key.remoteJidAlt) : null,
     fromMe: Boolean(message.key.fromMe),
     pushName: message.pushName ?? null,
     kind: kind === "conversation" || kind === "extendedTextMessage" ? "text" : kind.replace("Message", "").toLowerCase(),

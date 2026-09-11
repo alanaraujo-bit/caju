@@ -4,6 +4,7 @@ import { transaction } from "./db.js";
 export type IncomingMessage = {
   externalId: string;
   remoteJid: string;
+  phoneJid?: string | null;
   fromMe: boolean;
   pushName?: string | null;
   kind: string;
@@ -13,9 +14,11 @@ export type IncomingMessage = {
   replyToExternalId?: string | null;
 };
 
-function phoneFromJid(jid: string) {
-  const value = jid.split("@")[0]?.split(":")[0] ?? jid;
-  return value.replace(/\D/g, "") ? `+${value.replace(/\D/g, "")}` : null;
+// Só um JID de telefone vira número; "@lid" e grupos não carregam o número da pessoa.
+function phoneFromJid(jid: string | null | undefined) {
+  if (!jid?.endsWith("@s.whatsapp.net")) return null;
+  const digits = jid.split("@")[0]?.split(":")[0]?.replace(/\D/g, "") ?? "";
+  return digits ? `+${digits}` : null;
 }
 
 function preview(message: IncomingMessage) {
@@ -40,9 +43,9 @@ export async function ingestIncomingMessage(
   if (!message.externalId || !message.remoteJid) return null;
   return transaction(tenantId, async (db) => {
     const direction = message.fromMe ? "outbound" : "inbound";
-    const contactPhone = phoneFromJid(message.remoteJid);
+    const contactPhone = phoneFromJid(message.phoneJid ?? message.remoteJid);
     let contactId: string | null = null;
-    if (contactPhone && !message.remoteJid.endsWith("@g.us")) {
+    if (contactPhone) {
       const { rows } = await db.query(
         `INSERT INTO contacts(id,tenant_id,name,phone) VALUES($1,$2,$3,$4)
          ON CONFLICT(tenant_id,phone) DO UPDATE SET name=CASE WHEN contacts.name=contacts.phone THEN excluded.name ELSE contacts.name END,updated_at=now()
@@ -86,7 +89,7 @@ export async function ingestIncomingMessage(
     if (!actualConversationId) return null;
     if (contactId)
       await db.query(
-        "UPDATE conversations SET contact_id=coalesce(contact_id,$1) WHERE id=$2",
+        "UPDATE conversations SET contact_id=$1 WHERE id=$2 AND contact_id IS DISTINCT FROM $1",
         [contactId, actualConversationId],
       );
     const { rows } = await db.query(
