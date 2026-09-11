@@ -380,6 +380,22 @@ test("atendimento: concorrência, fila durável, idempotência, recibos e histó
     details.messages.find((m: any) => m.id === uncertain.json().id).status,
     "uncertain",
   );
+  // Sem reenvio automático, o que cura um envio incerto é o recibo do canal.
+  const uncertainExternalId = (
+    await tx(tenantA, (db) =>
+      db.query("SELECT external_id FROM messages WHERE id=$1", [
+        uncertain.json().id,
+      ]),
+    )
+  ).rows[0].external_id;
+  await recordReceipt(tenantA, connectionId, uncertainExternalId, "delivered");
+  details = (
+    await call("GET", `/api/inbox/${id}/messages`, undefined, a)
+  ).json();
+  assert.equal(
+    details.messages.find((m: any) => m.id === uncertain.json().id).status,
+    "delivered",
+  );
   await send({
     requestId: randomUUID(),
     body: "Contexto somente para a equipe",

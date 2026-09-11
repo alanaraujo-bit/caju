@@ -25,6 +25,11 @@ node scripts/release.mjs             # API + web + smoke tests
 
 O que ele faz, na ordem: typecheck e build; coloca `MIGRATION_DATABASE_URL` (a `DATABASE_URL` do serviço Postgres) no serviço `api` com `--skip-deploys`; `railway up --detach`; aguarda o deployment terminar em `SUCCESS` (falha em `FAILED`/`CRASHED`); esvazia a variável de volta (um marcador que `migrate.js` reconhece como "nada a aplicar"; `variable delete` dispararia outro deploy); confere `/api/health` na API pública; `vercel deploy --prod --yes`; confere `/api/health` pela origem da Vercel. Se o deployment falhar, a variável é esvaziada mesmo assim e o deploy anterior continua no ar.
 
+Depois de `SUCCESS`, dois pontos que o smoke test não enxerga:
+
+1. **A sessão do WhatsApp volta sozinha, mas não na hora.** O container novo só assume a conexão quando a concessão do container antigo expira (até 45 s após ele ser removido) e a varredura periódica a recolhe. Abra Configurações → WhatsApp e confirme que o estado volta a "conectado" sem pedir um novo QR Code, e que mensagens enfileiradas durante a troca saem. Só então a publicação está funcionando, não apenas publicada.
+2. **Publique em horário calmo na primeira vez que uma migration mexer em `messages`.** A 006 recria a constraint de status (varredura da tabela com lock exclusivo) e cria índices sem `CONCURRENTLY`; em tabelas pequenas leva milissegundos, mas durante o lock as mensagens recebidas pelo container antigo ficam aguardando.
+
 Manualmente, os comandos equivalentes são:
 
 ```bash
