@@ -11,7 +11,7 @@
     ]
   },
   "deploy": {
-    "startCommand": "npm start -w @caju/api",
+    "startCommand": "node apps/api/dist/migrate.js && npm start -w @caju/api",
     "healthcheckPath": "/api/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",

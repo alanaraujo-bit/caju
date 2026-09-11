@@ -41,4 +41,10 @@ O gateway mantém uma conexão por número e restaura sessões ativas depois de 
 
 Esta conexão usa um cliente não oficial de WhatsApp Web e pode ser afetada por mudanças ou restrições do WhatsApp. Por isso, não existe promessa técnica de conexão ininterrupta. O produto prioriza atendimento receptivo, impede disparos indiscriminados por desenho e mantém a integração oficial como alternativa futura.
 
-O próximo ciclo adiciona idempotência por ID externo, inbox/outbox persistentes, ordenação pelo timestamp do canal, reconciliação de entrega, mídia privada e eventos observáveis. A tela de inbox só será liberada quando esse ciclo funcionar com um número real.
+## Inbox, outbox e mídia
+
+Cada mensagem do canal é idempotente por `(tenant, conexão, external_id)`; a conversa é única por `(tenant, conexão, remote_jid)` e guarda prévia, contagem de não lidas, status, responsável, departamento e uma `version` que protege assumir/transferir/finalizar contra alterações simultâneas (`409`). Localização, contato compartilhado e enquete viram texto (`kind` próprio); reações, edições, exclusões e chaves de grupo não entram no histórico. Mídia recebida é baixada com limite de 10 MB, validada pela assinatura do arquivo (não pela extensão) e guardada em `message_media` sob RLS; a rota que a serve exige sessão da empresa dona, força `nosniff` e `no-store`.
+
+O envio é uma fila no próprio PostgreSQL: a rota grava a mensagem como `queued` com `request_id` (idempotência por requisição: repetir a mesma requisição devolve a mesma mensagem, mudar o conteúdo com o mesmo ID devolve `409`). Só o processo que detém a concessão da conexão despacha, uma mensagem por vez com `SKIP LOCKED`; um envio interrompido vira `uncertain` e nunca é reenviado automaticamente, porque o WhatsApp pode ter entregue. Os recibos do canal (`sent`, `delivered`, `read`) avançam o status apenas para frente, inclusive a partir de `uncertain`. Quando alguém da equipe abre a conversa, o gateway confirma leitura ao cliente uma vez por mensagem (`receipted_at`).
+
+Migrations são aditivas e precisam preceder o código que as usa; ver o procedimento em `docs/OPERATIONS.md`.

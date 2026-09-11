@@ -65,5 +65,13 @@ export async function migrate(
     await db.end();
   }
 }
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1])
-  await migrate();
+// Como comando de boot: sem a credencial de migration não há nada a aplicar e o
+// serviço sobe normalmente. A credencial só existe no serviço durante uma publicação.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const url = process.env.MIGRATION_DATABASE_URL ?? "";
+  if (/^postgres(ql)?:\/\//.test(url)) await migrate(url);
+  else
+    console.log(
+      "MIGRATION_DATABASE_URL ausente ou esvaziada; nenhuma migration aplicada.",
+    );
+}
