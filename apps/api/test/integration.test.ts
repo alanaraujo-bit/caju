@@ -5,7 +5,9 @@ import pg from "pg";
 import type { FastifyInstance } from "fastify";
 import { SMTPServer } from "smtp-server";
 import { migrate } from "../src/migrate.js";
-import { ingestIncomingMessage } from "../src/inbox-ingest.js";
+let ingestIncomingMessage: typeof import("../src/inbox-ingest.js").ingestIncomingMessage;
+let dispatchOutbox: typeof import("../src/outbox.js").dispatchOutbox;
+let recordReceipt: typeof import("../src/outbox.js").recordReceipt;
 const testName = `caju_test_${randomUUID().replaceAll("-", "")}`;
 const admin = new pg.Client({
   connectionString: process.env.MIGRATION_DATABASE_URL,
@@ -77,6 +79,8 @@ before(async () => {
   const runtimeURL = new URL(process.env.DATABASE_URL!);
   runtimeURL.pathname = `/${testName}`;
   process.env.DATABASE_URL = runtimeURL.toString();
+  ({ ingestIncomingMessage } = await import("../src/inbox-ingest.js"));
+  ({ dispatchOutbox, recordReceipt } = await import("../src/outbox.js"));
   await migrate(migrationURL.toString());
   const db = await import("../src/db.js");
   pool = db.pool;
@@ -213,27 +217,285 @@ test("conexão por QR respeita permissão, tenant e limite do plano", async () =
 });
 test("mensagens recebidas criam inbox idempotente e respeitam tenant", async () => {
   const connectionId = randomUUID();
-  await tx(tenantA, (db) => db.query(
-    "INSERT INTO whatsapp_connections(id,tenant_id,label,status) VALUES($1,$2,'Inbox de teste','connected')",
-    [connectionId, tenantA],
-  ));
+  await tx(tenantA, (db) =>
+    db.query(
+      "INSERT INTO whatsapp_connections(id,tenant_id,label,status) VALUES($1,$2,'Inbox de teste','connected')",
+      [connectionId, tenantA],
+    ),
+  );
   const sentAt = new Date("2026-09-11T12:00:00.000Z");
   const first = await ingestIncomingMessage(tenantA, connectionId, {
-    externalId: "wamid-test-1", remoteJid: "5511991112222@s.whatsapp.net", fromMe: false,
-    pushName: "Cliente Inbox", kind: "text", body: "Olá, preciso de ajuda", sentAt,
+    externalId: "wamid-test-1",
+    remoteJid: "5511991112222@s.whatsapp.net",
+    fromMe: false,
+    pushName: "Cliente Inbox",
+    kind: "text",
+    body: "Olá, preciso de ajuda",
+    sentAt,
   });
   const duplicate = await ingestIncomingMessage(tenantA, connectionId, {
-    externalId: "wamid-test-1", remoteJid: "5511991112222@s.whatsapp.net", fromMe: false,
-    pushName: "Cliente Inbox", kind: "text", body: "Olá, preciso de ajuda", sentAt,
+    externalId: "wamid-test-1",
+    remoteJid: "5511991112222@s.whatsapp.net",
+    fromMe: false,
+    pushName: "Cliente Inbox",
+    kind: "text",
+    body: "Olá, preciso de ajuda",
+    sentAt,
   });
   assert.equal(first?.duplicate, false);
   assert.equal(duplicate?.duplicate, true);
   const inbox = (await call("GET", "/api/inbox?q=Inbox", undefined, a)).json();
   assert.equal(inbox.items.length, 1);
   assert.equal(inbox.items[0].unread_count, 1);
-  assert.equal((await call("POST", `/api/inbox/${first?.conversationId}/read`, {}, a)).statusCode, 200);
-  assert.equal((await call("GET", "/api/inbox", undefined, b)).json().items.length, 0);
+  assert.equal(
+    (await call("POST", `/api/inbox/${first?.conversationId}/read`, {}, a))
+      .statusCode,
+    200,
+  );
+  assert.equal(
+    (await call("GET", "/api/inbox", undefined, b)).json().items.length,
+    0,
+  );
 });
+test("atendimento: concorrência, fila durável, idempotência, recibos e histórico", async () => {
+  const conversation = (
+    await call("GET", "/api/inbox?q=Inbox", undefined, a)
+  ).json().items[0];
+  const id = conversation.id;
+  const me = (await call("GET", "/api/auth/me", undefined, a)).json().user;
+  const other = (await call("GET", "/api/auth/me", undefined, b)).json().user;
+  const patch = (body: object, cookie = a) =>
+    call("PATCH", `/api/inbox/${id}`, body, cookie);
+  assert.equal(
+    (
+      await patch({
+        version: conversation.version,
+        assigneeId: other.membershipId,
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await patch(
+        { version: conversation.version, assigneeId: me.membershipId },
+        b,
+      )
+    ).statusCode,
+    404,
+  );
+  const races = await Promise.all([
+    patch({
+      version: conversation.version,
+      assigneeId: me.membershipId,
+      status: "open",
+    }),
+    patch({
+      version: conversation.version,
+      assigneeId: me.membershipId,
+      status: "open",
+    }),
+  ]);
+  assert.deepEqual(races.map((r) => r.statusCode).sort(), [200, 409]);
+  const requestId = randomUUID();
+  const send = (body: object, cookie = a) =>
+    call("POST", `/api/inbox/${id}/messages`, body, cookie);
+  const sent = await Promise.all([
+    send({ requestId, body: "Resposta persistida" }),
+    send({ requestId, body: "Resposta persistida" }),
+  ]);
+  assert.equal(sent[0].statusCode, 201, sent[0].body);
+  assert.equal(sent[0].json().id, sent[1].json().id);
+  assert.equal(sent[0].json().status, "queued");
+  assert.equal(
+    (await send({ requestId, body: "Outra resposta" })).statusCode,
+    409,
+  );
+  assert.equal(
+    (await send({ requestId: randomUUID(), body: "   " })).statusCode,
+    400,
+  );
+  assert.equal(
+    (await send({ requestId: randomUUID(), body: "Tentativa cruzada" }, b))
+      .statusCode,
+    404,
+  );
+  const connectionId = (
+    await tx(tenantA, (db) =>
+      db.query("SELECT whatsapp_connection_id FROM conversations WHERE id=$1", [
+        id,
+      ]),
+    )
+  ).rows[0].whatsapp_connection_id;
+  let dispatches = 0,
+    externalId = "";
+  const transport = async (jid: string, body: string, external: string) => {
+    assert.match(jid, /@s.whatsapp.net$/);
+    assert.equal(body, "Resposta persistida");
+    dispatches++;
+    externalId = external;
+  };
+  await Promise.all([
+    dispatchOutbox(tenantA, connectionId, transport),
+    dispatchOutbox(tenantA, connectionId, transport),
+  ]);
+  assert.equal(dispatches, 1);
+  await recordReceipt(tenantA, connectionId, externalId, "read");
+  await recordReceipt(tenantA, connectionId, externalId, "delivered");
+  let details = (
+    await call("GET", `/api/inbox/${id}/messages`, undefined, a)
+  ).json();
+  assert.equal(
+    details.messages.find((m: any) => m.id === sent[0].json().id).status,
+    "read",
+  );
+  const uncertain = await send({
+    requestId: randomUUID(),
+    body: "Resultado incerto",
+  });
+  await dispatchOutbox(tenantA, connectionId, async () => {
+    throw new Error("socket closed after write");
+  });
+  await dispatchOutbox(tenantA, connectionId, async () => {
+    throw new Error("Must never resend automatically");
+  });
+  details = (
+    await call("GET", `/api/inbox/${id}/messages`, undefined, a)
+  ).json();
+  assert.equal(
+    details.messages.find((m: any) => m.id === uncertain.json().id).status,
+    "uncertain",
+  );
+  await send({
+    requestId: randomUUID(),
+    body: "Contexto somente para a equipe",
+    internal: true,
+  });
+  let noteDispatched = false;
+  await dispatchOutbox(tenantA, connectionId, async () => {
+    noteDispatched = true;
+  });
+  assert.equal(noteDispatched, false);
+  assert.equal(
+    (await patch({ version: details.conversation.version, status: "closed" }))
+      .statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await patch({
+        version: details.conversation.version,
+        status: "closed",
+        reason: "Solicitação resolvida",
+      })
+    ).statusCode,
+    200,
+  );
+  assert.equal(
+    (await send({ requestId: randomUUID(), body: "Não enviar encerrado" }))
+      .statusCode,
+    409,
+  );
+  await ingestIncomingMessage(tenantA, connectionId, {
+    externalId: "reopen-inbound",
+    remoteJid: "5511991112222@s.whatsapp.net",
+    fromMe: false,
+    kind: "text",
+    body: "Uma nova dúvida",
+    sentAt: new Date(),
+  });
+  details = (
+    await call("GET", `/api/inbox/${id}/messages`, undefined, a)
+  ).json();
+  assert.equal(details.conversation.status, "waiting");
+  assert.equal(
+    (await patch({ version: details.conversation.version, assigneeId: null }))
+      .statusCode,
+    200,
+  );
+  details = (
+    await call("GET", `/api/inbox/${id}/messages`, undefined, a)
+  ).json();
+  assert.equal(details.conversation.assignee_id, null);
+  assert.equal(
+    (await send({ requestId: randomUUID(), body: "Sem assumir" })).statusCode,
+    409,
+  );
+  const oldestId = details.messages[0].id;
+  await call("POST", `/api/inbox/${id}/read`, { throughId: oldestId }, a);
+  assert.equal(
+    (await call("GET", `/api/inbox/${id}/messages`, undefined, a)).json()
+      .conversation.unread_count,
+    1,
+  );
+  await tx(tenantA, (db) =>
+    db.query(
+      `INSERT INTO messages(id,tenant_id,conversation_id,whatsapp_connection_id,external_id,direction,kind,body,sent_at)
+    SELECT gen_random_uuid(),$1,$2,$3,'history-'||n,'inbound','text','Histórico '||n,now()+n*interval '1 second' FROM generate_series(1,120) n`,
+      [tenantA, id, connectionId],
+    ),
+  );
+  const recent = (
+    await call("GET", `/api/inbox/${id}/messages`, undefined, a)
+  ).json();
+  assert.equal(recent.messages.length, 100);
+  assert.equal(recent.hasMore, true);
+  assert.equal(recent.messages.at(-1).body, "Histórico 120");
+  const older = (
+    await call(
+      "GET",
+      `/api/inbox/${id}/messages?before=${recent.messages[0].id}`,
+      undefined,
+      a,
+    )
+  ).json();
+  assert.equal(older.hasMore, false);
+  assert.ok(
+    older.messages.some(
+      (m: any) => m.body === "Contexto somente para a equipe",
+    ),
+  );
+  assert.equal(
+    (await call("GET", "/api/inbox?q=Contexto", undefined, a)).json().items
+      .length,
+    1,
+  );
+  assert.equal(
+    (await call("GET", `/api/inbox/${id}/messages`, undefined, b)).statusCode,
+    404,
+  );
+});
+
+test("mídia privada valida conteúdo, mantém idempotência e impede acesso cruzado", async () => {
+  const connectionId = randomUUID();
+  await tx(tenantA, (db) => db.query("INSERT INTO whatsapp_connections(id,tenant_id,label,status) VALUES($1,$2,'Mídia de teste','attention')", [connectionId, tenantA]));
+  const result = await ingestIncomingMessage(tenantA, connectionId, { externalId: "media-inbound", remoteJid: "5511999997777@s.whatsapp.net", fromMe: false, kind: "text", body: "Pode mandar o documento?", sentAt: new Date() });
+  const id = result!.conversationId;
+  const details = (await call("GET", `/api/inbox/${id}/messages`, undefined, a)).json();
+  const me = (await call("GET", "/api/auth/me", undefined, a)).json().user;
+  await call("PATCH", `/api/inbox/${id}`, { version: details.conversation.version, assigneeId: me.membershipId, status: "open" }, a);
+  const attachment = { name: "comprovante.pdf", base64: Buffer.from("%PDF-1.4\n% Documento de teste isolado\n%%EOF").toString("base64") };
+  const requestId = randomUUID();
+  const posted = await call("POST", `/api/inbox/${id}/messages`, { requestId, attachment }, a);
+  assert.equal(posted.statusCode, 201, posted.body);
+  const messageId = posted.json().id;
+  assert.equal((await call("POST", `/api/inbox/${id}/messages`, { requestId, attachment }, a)).json().id, messageId);
+  assert.equal((await call("POST", `/api/inbox/${id}/messages`, { requestId, attachment: { ...attachment, name: "outro.pdf" } }, a)).statusCode, 409);
+  const url = `/api/inbox/${id}/messages/${messageId}/media`;
+  const media = await call("GET", url, undefined, a);
+  assert.equal(media.statusCode, 200); assert.equal(media.headers["content-type"], "application/pdf");
+  assert.match(String(media.headers["content-disposition"]), /^attachment/);
+  assert.match(String(media.headers["cache-control"]), /no-store/);
+  assert.deepEqual(media.rawPayload, Buffer.from(attachment.base64, "base64"));
+  assert.equal((await call("GET", url, undefined, b)).statusCode, 404);
+  assert.equal((await call("GET", url)).statusCode, 401);
+  assert.equal((await call("POST", `/api/inbox/${id}/messages`, { requestId: randomUUID(), attachment: { name: "imagem.png", base64: Buffer.from("<html>Não é imagem</html>").toString("base64") } }, a)).statusCode, 400);
+  assert.equal((await call("POST", `/api/inbox/${id}/messages`, { requestId: randomUUID(), internal: true, attachment }, a)).statusCode, 400);
+  let delivered = false;
+  await dispatchOutbox(tenantA, connectionId, async (_jid, _body, _externalId, file) => { assert.equal(file?.mime, "application/pdf"); assert.deepEqual(file?.content, media.rawPayload); delivered = true; });
+  assert.equal(delivered, true);
+});
+
 test("contatos e etiquetas persistem, filtros e edição funcionam", async () => {
   let r = await call(
     "POST",

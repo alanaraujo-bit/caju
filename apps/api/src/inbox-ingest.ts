@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { transaction } from "./db.js";
+import type { Attachment } from "./media.js";
 
 export type IncomingMessage = {
   externalId: string;
@@ -13,6 +14,7 @@ export type IncomingMessage = {
   mediaName?: string | null;
   sentAt: Date;
   replyToExternalId?: string | null;
+  attachment?: Attachment | null;
 };
 
 // Só um JID de telefone vira número; "@lid" e grupos não carregam o número da pessoa.
@@ -54,7 +56,7 @@ export async function ingestIncomingMessage(
         [
           randomUUID(),
           tenantId,
-          message.pushName?.trim() || contactPhone,
+          (!message.fromMe && message.pushName?.trim()) || contactPhone,
           contactPhone,
         ],
       );
@@ -64,7 +66,7 @@ export async function ingestIncomingMessage(
     const protocol = `CAJ-${Date.now().toString(36).toUpperCase()}-${conversationId.slice(0, 4).toUpperCase()}`;
     const { rows: inserted } = await db.query(
       `INSERT INTO conversations(id,tenant_id,whatsapp_connection_id,remote_jid,contact_id,protocol,last_message_at,last_message_preview,last_message_from_me,unread_count,title)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $10 THEN 1 ELSE 0 END,$11)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,0,$10)
        ON CONFLICT(tenant_id,whatsapp_connection_id,remote_jid) DO NOTHING RETURNING id`,
       [
         conversationId,
@@ -76,7 +78,6 @@ export async function ingestIncomingMessage(
         message.sentAt,
         preview(message),
         direction === "outbound",
-        direction === "inbound",
         message.title ?? null,
       ],
     );
@@ -119,13 +120,32 @@ export async function ingestIncomingMessage(
         message.replyToExternalId ?? null,
       ],
     );
-    if (!rows.length)
+    if (!rows.length) {
+      if (message.fromMe)
+        await db.query(
+          "UPDATE messages SET status='sent',status_updated_at=now() WHERE whatsapp_connection_id=$1 AND external_id=$2 AND direction='outbound' AND status IN ('queued','sending','uncertain')",
+          [connectionId, message.externalId],
+        );
       return { conversationId: actualConversationId, duplicate: true };
+    }
+    if (message.attachment)
+      await db.query(
+        "INSERT INTO message_media(tenant_id,message_id,mime,name,content) VALUES($1,$2,$3,$4,$5)",
+        [
+          tenantId,
+          rows[0].id,
+          message.attachment.mime,
+          message.attachment.name,
+          message.attachment.content,
+        ],
+      );
     await db.query(
       `UPDATE conversations SET last_message_at=CASE WHEN last_message_at IS NULL OR $2>=last_message_at THEN $2 ELSE last_message_at END,
        last_message_preview=CASE WHEN last_message_at IS NULL OR $2>=last_message_at THEN $3 ELSE last_message_preview END,
        last_message_from_me=CASE WHEN last_message_at IS NULL OR $2>=last_message_at THEN $4 ELSE last_message_from_me END,
-       unread_count=unread_count+CASE WHEN $5='inbound' THEN 1 ELSE 0 END,updated_at=now() WHERE id=$1`,
+       unread_count=unread_count+CASE WHEN $5='inbound' THEN 1 ELSE 0 END,
+       status=CASE WHEN $5='inbound' AND status='closed' THEN 'waiting' ELSE status END,
+       version=version+CASE WHEN $5='inbound' AND status='closed' THEN 1 ELSE 0 END,updated_at=now() WHERE id=$1`,
       [
         actualConversationId,
         message.sentAt,

@@ -8,6 +8,8 @@ import makeWASocket, {
   BufferJSON,
   DisconnectReason,
   initAuthCreds,
+  downloadContentFromMessage,
+  normalizeMessageContent,
   type AuthenticationCreds,
   type AuthenticationState,
   type SignalDataSet,
@@ -17,6 +19,8 @@ import makeWASocket, {
 import pino from "pino";
 import { pool, transaction } from "./db.js";
 import { ingestIncomingMessage } from "./inbox-ingest.js";
+import { dispatchOutbox, recordReceipt } from "./outbox.js";
+import { MAX_MEDIA_BYTES, validateMedia } from "./media.js";
 
 export type WhatsAppRuntimeState = {
   status: string;
@@ -41,6 +45,8 @@ type LiveConnection = {
   reconnectAttempts: number;
   retry?: NodeJS.Timeout;
   heartbeat?: NodeJS.Timeout;
+  outbox?: NodeJS.Timeout;
+  dispatching?: boolean;
   runtime: WhatsAppRuntimeState;
 };
 
@@ -211,7 +217,10 @@ function messageTimestamp(value: unknown) {
 }
 
 function normalizeIncoming(message: any) {
-  const content = message?.message;
+  if (!/@(s\.whatsapp\.net|lid|g\.us)$/.test(message?.key?.remoteJid ?? "")) return null;
+  // View-once media is intentionally not copied into the shared history.
+  if (message?.message?.viewOnceMessage || message?.message?.viewOnceMessageV2 || message?.message?.viewOnceMessageV2Extension) return null;
+  const content = normalizeMessageContent(message?.message);
   if (!message?.key?.id || !message?.key?.remoteJid || !content) return null;
   const [kind, value] =
     Object.entries(content).find(([name]) =>
@@ -246,6 +255,7 @@ function normalizeIncoming(message: any) {
         : kind.replace("Message", "").toLowerCase(),
     body: String(body),
     mediaName: entry?.fileName ?? null,
+    mediaSource: typeof entry === "object" && entry?.mediaKey ? entry : null,
     sentAt: messageTimestamp(message.messageTimestamp),
     replyToExternalId:
       message.message?.extendedTextMessage?.contextInfo?.stanzaId ?? null,
@@ -278,6 +288,60 @@ export class BaileysGateway implements WhatsAppGateway {
       15_000,
     );
     connection.heartbeat.unref();
+    connection.outbox = setInterval(() => {
+      if (
+        connection.stopped ||
+        connection.dispatching ||
+        connection.runtime.status !== "connected" ||
+        !connection.socket
+      )
+        return;
+      connection.dispatching = true;
+      void this.renew(connectionId, connection)
+        .then(async () => {
+          if (connection.stopped || !connection.socket) return;
+          const socket = connection.socket;
+          await dispatchOutbox(
+            tenantId,
+            connectionId,
+            async (jid, body, externalId, attachment) => {
+              const content = !attachment
+                ? { text: body }
+                : attachment.mime.startsWith("image/")
+                  ? {
+                      image: attachment.content,
+                      caption: body,
+                      mimetype: attachment.mime,
+                    }
+                  : attachment.mime.startsWith("audio/")
+                    ? { audio: attachment.content, mimetype: attachment.mime }
+                    : attachment.mime.startsWith("video/")
+                      ? {
+                          video: attachment.content,
+                          caption: body,
+                          mimetype: attachment.mime,
+                        }
+                      : {
+                          document: attachment.content,
+                          mimetype: attachment.mime,
+                          fileName: attachment.name,
+                          caption: body,
+                        };
+              const sent = await socket.sendMessage(jid, content, {
+                messageId: externalId,
+              });
+              if (!sent) throw new Error("Send not confirmed");
+            },
+          );
+        })
+        .catch(() =>
+          log.error({ connectionId }, "falha ao processar fila de envio"),
+        )
+        .finally(() => {
+          connection.dispatching = false;
+        });
+    }, 1000);
+    connection.outbox.unref();
     await this.open(connectionId, connection);
   }
 
@@ -292,6 +356,7 @@ export class BaileysGateway implements WhatsAppGateway {
       connection.stopped = true;
       if (connection.retry) clearTimeout(connection.retry);
       if (connection.heartbeat) clearInterval(connection.heartbeat);
+      if (connection.outbox) clearInterval(connection.outbox);
       await connection.socket?.logout().catch(() => {});
       await connection.socket?.end(undefined).catch(() => {});
       this.live.delete(connectionId);
@@ -318,6 +383,7 @@ export class BaileysGateway implements WhatsAppGateway {
     connection.stopped = true;
     if (connection.retry) clearTimeout(connection.retry);
     if (connection.heartbeat) clearInterval(connection.heartbeat);
+    if (connection.outbox) clearInterval(connection.outbox);
     await connection.socket?.end(undefined).catch(() => {});
     this.live.delete(connectionId);
     await transaction(connection.tenantId, (db) =>
@@ -383,6 +449,28 @@ export class BaileysGateway implements WhatsAppGateway {
       });
       connection.socket = socket;
       socket.ev.on("creds.update", saveCreds);
+      socket.ev.on("messages.update", async (updates) => {
+        for (const { key, update } of updates) {
+          if (!key.id || !update.status) continue;
+          const status =
+            update.status >= 4
+              ? "read"
+              : update.status === 3
+                ? "delivered"
+                : update.status === 2
+                  ? "sent"
+                  : null;
+          if (status)
+            await recordReceipt(
+              connection.tenantId,
+              connectionId,
+              key.id,
+              status,
+            ).catch(() =>
+              log.error({ connectionId }, "falha ao registrar confirmação"),
+            );
+        }
+      });
       // O nome do grupo não vem na mensagem; buscamos uma vez por grupo e guardamos por sessão.
       const groupTitles = new Map<string, Promise<string | null>>();
       const groupTitle = (jid: string) => {
@@ -404,9 +492,45 @@ export class BaileysGateway implements WhatsAppGateway {
         if (type === "append" || type === "notify") {
           for (const message of messages) {
             const normalized = normalizeIncoming(message);
-            if (normalized)
+            if (normalized) {
+              let attachment = null;
+              if (normalized.mediaSource) {
+                try {
+                  const source = normalized.mediaSource;
+                  if (Number(source.fileLength ?? 0) > MAX_MEDIA_BYTES)
+                    throw new Error("Media too large");
+                  const stream = await downloadContentFromMessage(
+                    source,
+                    normalized.kind === "sticker"
+                      ? "sticker"
+                      : (normalized.kind as
+                          "image" | "audio" | "video" | "document"),
+                    { options: { signal: AbortSignal.timeout(15000) } },
+                  );
+                  const chunks: Buffer[] = [];
+                  let bytes = 0;
+                  for await (const chunk of stream) {
+                    bytes += chunk.length;
+                    if (bytes > MAX_MEDIA_BYTES) {
+                      stream.destroy();
+                      throw new Error("Media too large");
+                    }
+                    chunks.push(Buffer.from(chunk));
+                  }
+                  attachment = await validateMedia(
+                    Buffer.concat(chunks),
+                    normalized.mediaName ?? "arquivo",
+                  );
+                } catch {
+                  log.warn(
+                    { connectionId },
+                    "mídia não disponível ou fora dos limites",
+                  );
+                }
+              }
               await ingestIncomingMessage(connection.tenantId, connectionId, {
                 ...normalized,
+                attachment,
                 title: await groupTitle(normalized.remoteJid),
               }).catch((error) =>
                 log.error(
@@ -418,6 +542,7 @@ export class BaileysGateway implements WhatsAppGateway {
                   "falha ao registrar mensagem recebida",
                 ),
               );
+            }
           }
         }
       });

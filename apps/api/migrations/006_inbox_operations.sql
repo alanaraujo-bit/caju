@@ -1,0 +1,10 @@
+ALTER TABLE conversations ADD COLUMN version integer NOT NULL DEFAULT 1;
+ALTER TABLE conversations ADD COLUMN closed_reason text;
+ALTER TABLE messages DROP CONSTRAINT messages_status_check;
+ALTER TABLE messages ADD CONSTRAINT messages_status_check CHECK(status IN ('received','queued','sending','uncertain','sent','delivered','read','failed'));
+ALTER TABLE messages ADD COLUMN request_id uuid;
+ALTER TABLE messages ADD COLUMN status_updated_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE messages ADD COLUMN author_id uuid;
+ALTER TABLE messages ADD CONSTRAINT messages_author_fk FOREIGN KEY(tenant_id,author_id) REFERENCES memberships(tenant_id,id);
+CREATE UNIQUE INDEX messages_request ON messages(tenant_id,conversation_id,request_id) WHERE request_id IS NOT NULL;
+CREATE INDEX messages_outbox ON messages(tenant_id,whatsapp_connection_id,created_at) WHERE status IN ('queued','sending');

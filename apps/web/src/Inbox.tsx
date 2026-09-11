@@ -1,5 +1,9 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   ArrowLeft,
   CheckCheck,
@@ -9,9 +13,28 @@ import {
   MessageCircle,
   Search,
   SearchX,
+  Send,
+  StickyNote,
+  UserRoundCheck,
+  Check,
+  Clock3,
+  AlertCircle,
+  ArrowDown,
+  Zap,
+  Paperclip,
+  X,
+  Download,
 } from "lucide-react";
 import { api, type User } from "./api";
-import { Avatar, Empty, ErrorMessage, Loading, Retry } from "./ui";
+import {
+  Avatar,
+  Empty,
+  ErrorMessage,
+  Loading,
+  Retry,
+  Spinner,
+  Modal,
+} from "./ui";
 import { useSession, can } from "./App";
 
 type Conversation = {
@@ -27,6 +50,10 @@ type Conversation = {
   contact_phone: string | null;
   assignee_name: string | null;
   department_name: string | null;
+  assignee_id: string | null;
+  department_id: string | null;
+  version: number;
+  closed_reason?: string | null;
 };
 type Message = {
   id: string;
@@ -37,8 +64,26 @@ type Message = {
   sender_name: string | null;
   sent_at: string;
   status: string;
+  has_media?: boolean;
+  media_mime?: string;
 };
-type InboxResponse = { items: Conversation[]; counts: Record<string, number> };
+type Upload = { name: string; base64: string };
+type SendRequest = {
+  id: string;
+  body: string;
+  internal: boolean;
+  attachment: Upload | null;
+};
+type InboxResponse = {
+  items: Conversation[];
+  counts: Record<string, number>;
+  hasMore: boolean;
+};
+type Details = {
+  conversation: Conversation;
+  messages: Message[];
+  hasMore: boolean;
+};
 
 const statuses = ["waiting", "open", "followup", "closed"] as const;
 const statusLabels: Record<string, string> = {
@@ -121,15 +166,26 @@ function useIsMobile() {
 export function Inbox() {
   const [status, setStatus] = useState("all"),
     [q, setQ] = useState(""),
-    [selected, setSelected] = useState<string | null>(null);
+    [selected, setSelected] = useState<string | null>(null),
+    [offset, setOffset] = useState(0);
   const mobile = useIsMobile();
   const list = useQuery({
-    queryKey: ["inbox", q, status],
+    queryKey: ["inbox", q, status, offset],
     queryFn: () =>
-      api<InboxResponse>(`/inbox?q=${encodeURIComponent(q)}&status=${status}`),
+      api<InboxResponse>(
+        `/inbox?q=${encodeURIComponent(q)}&status=${status}&offset=${offset}`,
+      ),
+    placeholderData: keepPreviousData,
     refetchInterval: 2500,
   });
   const items = list.data?.items ?? [];
+  useEffect(() => {
+    if (!mobile && !selected && items[0]) setSelected(items[0].id);
+  }, [mobile, selected, items[0]?.id]);
+  useEffect(() => {
+    setOffset(0);
+    setSelected(null);
+  }, [q, status]);
   const counts = list.data?.counts ?? {};
   const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
   // No desktop a primeira conversa abre sozinha; no celular só a que a pessoa tocou, senão a lista fica inacessível.
@@ -143,7 +199,7 @@ export function Inbox() {
     if (next) setSelected(next.id);
   };
   if (list.isPending) return <Loading />;
-  if (list.error)
+  if (list.error && !list.data)
     return <Retry error={list.error} retry={() => list.refetch()} />;
   return (
     <div className={`inbox-page ${active ? "is-reading" : ""}`}>
@@ -154,7 +210,7 @@ export function Inbox() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Buscar nome, telefone ou protocolo"
+            placeholder="Buscar contato, protocolo ou mensagem"
             aria-label="Buscar atendimentos"
           />
         </label>
@@ -179,6 +235,13 @@ export function Inbox() {
           })}
         </div>
       </header>
+      {list.error && (
+        <ErrorMessage
+          error={
+            new Error("A atualização foi interrompida. Tentando reconectar…")
+          }
+        />
+      )}
       {items.length === 0 ? (
         filtering ? (
           <Empty
@@ -247,6 +310,30 @@ export function Inbox() {
                 </span>
               </button>
             ))}
+            {(offset > 0 || list.data?.hasMore) && (
+              <div className="inbox-pagination">
+                <button
+                  className="button secondary"
+                  disabled={!offset || list.isFetching}
+                  onClick={() => {
+                    setOffset(Math.max(0, offset - 100));
+                    setSelected(null);
+                  }}
+                >
+                  Anteriores
+                </button>
+                <button
+                  className="button secondary"
+                  disabled={!list.data?.hasMore || list.isFetching}
+                  onClick={() => {
+                    setOffset(offset + 100);
+                    setSelected(null);
+                  }}
+                >
+                  Próximos
+                </button>
+              </div>
+            )}
           </section>
           {active && (
             <ConversationView
@@ -262,7 +349,7 @@ export function Inbox() {
 }
 
 function ConversationView({
-  conversation,
+  conversation: initialConversation,
   onBack,
 }: {
   conversation: Conversation;
@@ -270,24 +357,85 @@ function ConversationView({
 }) {
   const session = useSession(),
     queryClient = useQueryClient();
+  const conversationId = initialConversation.id;
+  const mobile = useIsMobile();
+  const [internal, setInternal] = useState(false);
+  const draftKey = [
+    "inbox-draft",
+    session.user.tenantId,
+    session.user.userId,
+    conversationId,
+    internal,
+  ];
+  const [draft, setDraft] = useState(
+    () => queryClient.getQueryData<string>(draftKey) ?? "",
+  );
+  const [sending, setSending] = useState(false),
+    [closing, setClosing] = useState(false),
+    [reason, setReason] = useState(""),
+    [older, setOlder] = useState<Message[]>([]),
+    [loadingOlder, setLoadingOlder] = useState(false),
+    [olderHasMore, setOlderHasMore] = useState<boolean | null>(null),
+    [newBelow, setNewBelow] = useState(false),
+    [quickOpen, setQuickOpen] = useState(false);
+  const attachmentKey = [
+    "inbox-attachment",
+    session.user.tenantId,
+    session.user.userId,
+    conversationId,
+  ];
+  const requestKey = [
+    "inbox-send-request",
+    session.user.tenantId,
+    session.user.userId,
+    conversationId,
+  ];
+  const [attachment, setAttachment] = useState<Upload | null>(
+    () => queryClient.getQueryData<Upload>(attachmentKey) ?? null,
+  );
+  const request = useRef<SendRequest | null>(
+    queryClient.getQueryData<SendRequest>(requestKey) ?? null,
+  );
+  const composer = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState<unknown>(null),
     [saving, setSaving] = useState(false);
   const stream = useRef<HTMLDivElement>(null),
     firstScroll = useRef(true);
   const details = useQuery({
-    queryKey: ["inbox-conversation", conversation.id],
-    queryFn: () =>
-      api<{ conversation: Conversation; messages: Message[] }>(
-        `/inbox/${conversation.id}/messages`,
-      ),
+    queryKey: ["inbox-conversation", conversationId],
+    queryFn: () => api<Details>(`/inbox/${conversationId}/messages`),
     refetchInterval: 2000,
   });
-  const messages = details.data?.messages ?? [];
+  const conversation = details.data?.conversation ?? initialConversation;
+  const team = useQuery({
+    queryKey: ["inbox-team"],
+    queryFn: () => api<{ id: string; name: string }[]>("/inbox/team"),
+  });
+  const departments = useQuery({
+    queryKey: ["departments"],
+    queryFn: () => api<{ id: string; name: string }[]>("/departments"),
+  });
+  const quick = useQuery({
+    queryKey: ["composer-replies"],
+    queryFn: () =>
+      api<{ id: string; title: string; body: string; shortcut: string }[]>(
+        "/quick-replies",
+      ),
+    enabled: quickOpen,
+  });
+  const currentMessages = details.data?.messages ?? [];
+  const messages = [
+    ...older.filter((m) => !currentMessages.some((x) => x.id === m.id)),
+    ...currentMessages,
+  ];
   const lastId = messages.at(-1)?.id;
   // Marca como lido ao abrir e sempre que chegar mensagem nova enquanto a conversa está na tela.
   useEffect(() => {
-    if (!lastId && details.isPending) return;
-    api(`/inbox/${conversation.id}/read`, { method: "POST" })
+    if (!lastId || document.visibilityState !== "visible") return;
+    api(`/inbox/${conversation.id}/read`, {
+      method: "POST",
+      body: { throughId: lastId },
+    })
       .then(() => queryClient.invalidateQueries({ queryKey: ["inbox"] }))
       .catch(() => {});
   }, [conversation.id, lastId, details.isPending, queryClient]);
@@ -299,24 +447,137 @@ function ConversationView({
     if (firstScroll.current || nearBottom)
       el.scrollTo({
         top: el.scrollHeight,
-        behavior: firstScroll.current ? "auto" : "smooth",
+        behavior:
+          firstScroll.current ||
+          window.matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? "auto"
+            : "smooth",
       });
+    else setNewBelow(true);
     firstScroll.current = false;
   }, [lastId]);
   const canManage = can(session.user as User, "inbox:manage");
-  const changeStatus = async (status: string) => {
+  const own = conversation.assignee_id === session.user.membershipId;
+  const canChange = canManage || own || !conversation.assignee_id;
+  const refresh = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["inbox"] }),
+      queryClient.invalidateQueries({
+        queryKey: ["inbox-conversation", conversationId],
+      }),
+    ]);
+  const change = async (body: object) => {
     setSaving(true);
     setError(null);
     try {
       await api(`/inbox/${conversation.id}`, {
         method: "PATCH",
-        body: { status },
+        body: { ...body, version: conversation.version },
       });
-      await queryClient.invalidateQueries({ queryKey: ["inbox"] });
+      await refresh();
+      setClosing(false);
+    } catch (e) {
+      setError(e);
+      await refresh();
+    } finally {
+      setSaving(false);
+    }
+  };
+  const updateDraft = (value: string) => {
+    setDraft(value);
+    queryClient.setQueryData(draftKey, value);
+  };
+  const switchMode = (value: boolean) => {
+    setInternal(value);
+    setDraft(
+      queryClient.getQueryData<string>([...draftKey.slice(0, -1), value]) ?? "",
+    );
+  };
+  const updateAttachment = (value: Upload | null) => {
+    setAttachment(value);
+    queryClient.setQueryData(attachmentKey, value);
+  };
+  const attach = async (file?: File) => {
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024 || !file.size) {
+      setError(new Error("Escolha um arquivo de até 10 MB."));
+      return;
+    }
+    setError(null);
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      updateAttachment({ name: file.name, base64 });
+    } catch {
+      setError(
+        new Error("Não foi possível ler o arquivo. Escolha-o novamente."),
+      );
+    }
+  };
+  const send = async () => {
+    const upload = internal ? null : attachment;
+    if (sending || (!draft.trim() && !upload)) return;
+    const text = draft.trim();
+    if (
+      !request.current ||
+      request.current.body !== text ||
+      request.current.internal !== internal ||
+      request.current.attachment !== upload
+    )
+      request.current = {
+        id: crypto.randomUUID(),
+        body: text,
+        internal,
+        attachment: upload,
+      };
+    queryClient.setQueryData(requestKey, request.current);
+    setSending(true);
+    setError(null);
+    try {
+      await api(`/inbox/${conversationId}/messages`, {
+        method: "POST",
+        body: {
+          requestId: request.current.id,
+          body: text,
+          internal,
+          attachment: upload ?? undefined,
+        },
+      });
+      updateDraft("");
+      request.current = null;
+      queryClient.removeQueries({ queryKey: requestKey });
+      if (!internal) updateAttachment(null);
+      await refresh();
+      stream.current?.scrollTo({ top: stream.current.scrollHeight });
+      composer.current?.focus();
     } catch (e) {
       setError(e);
     } finally {
-      setSaving(false);
+      setSending(false);
+    }
+  };
+  const loadOlder = async () => {
+    setLoadingOlder(true);
+    setError(null);
+    const el = stream.current,
+      height = el?.scrollHeight ?? 0;
+    try {
+      const result = await api<Details>(
+        `/inbox/${conversationId}/messages?before=${messages[0].id}`,
+      );
+      setOlder((existing) => [...result.messages, ...existing]);
+      setOlderHasMore(result.hasMore);
+      requestAnimationFrame(() => {
+        if (el) el.scrollTop += el.scrollHeight - height;
+      });
+    } catch (e) {
+      setError(e);
+    } finally {
+      setLoadingOlder(false);
     }
   };
   return (
@@ -334,7 +595,7 @@ function ConversationView({
         </button>
         <Avatar name={conversation.contact_name} />
         <div className="conversation-identity">
-          <strong>{conversation.contact_name}</strong>
+          <strong role="heading" aria-level={mobile ? 1 : 2}>{conversation.contact_name}</strong>
           <small>
             {conversation.is_group
               ? "Grupo"
@@ -344,13 +605,17 @@ function ConversationView({
             <span className="protocol">{conversation.protocol}</span>
           </small>
         </div>
-        {canManage ? (
+        {canChange ? (
           <label className={`status-select status-${conversation.status}`}>
             <span className="sr-only">Status do atendimento</span>
             <select
               value={conversation.status}
               disabled={saving}
-              onChange={(e) => changeStatus(e.target.value)}
+              onChange={(e) =>
+                e.target.value === "closed"
+                  ? setClosing(true)
+                  : change({ status: e.target.value })
+              }
             >
               {statuses.map((key) => (
                 <option key={key} value={key}>
@@ -366,13 +631,97 @@ function ConversationView({
           </span>
         )}
       </header>
+      <div className="conversation-ownership">
+        <span>
+          <UserRoundCheck size={15} />
+          {own
+            ? "Você está cuidando deste atendimento"
+            : conversation.assignee_name
+              ? `Com ${conversation.assignee_name}`
+              : "Ainda sem responsável"}
+        </span>
+        {!own && canChange && conversation.status !== "closed" && (
+          <button
+            className="button secondary"
+            disabled={saving}
+            onClick={() =>
+              change({ assigneeId: session.user.membershipId, status: "open" })
+            }
+          >
+            Assumir atendimento
+          </button>
+        )}
+        {canManage && (
+          <details className="conversation-transfer">
+            <summary>Transferir</summary>
+            <div>
+              <label>
+                Responsável
+                <select
+                  aria-label="Responsável pelo atendimento"
+                  value={conversation.assignee_id ?? ""}
+                  disabled={saving}
+                  onChange={(e) =>
+                    change({ assigneeId: e.target.value || null })
+                  }
+                >
+                  <option value="">Sem responsável</option>
+                  {team.data?.map((person) => (
+                    <option key={person.id} value={person.id}>
+                      {person.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Departamento
+                <select
+                  aria-label="Departamento do atendimento"
+                  value={conversation.department_id ?? ""}
+                  disabled={saving}
+                  onChange={(e) =>
+                    change({ departmentId: e.target.value || null })
+                  }
+                >
+                  <option value="">Sem departamento</option>
+                  {departments.data?.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </details>
+        )}
+      </div>
       <ErrorMessage error={error} />
       {details.isPending ? (
         <Loading />
       ) : details.error ? (
         <Retry error={details.error} retry={() => details.refetch()} />
       ) : (
-        <div className="message-stream" ref={stream}>
+        <div
+          className="message-stream"
+          tabIndex={0}
+          role="region"
+          aria-label="Histórico de mensagens"
+          ref={stream}
+          onScroll={() => {
+            const el = stream.current;
+            if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 80)
+              setNewBelow(false);
+          }}
+        >
+          {(olderHasMore ?? details.data?.hasMore) && (
+            <button
+              className="button secondary older-messages"
+              disabled={loadingOlder}
+              onClick={loadOlder}
+            >
+              {loadingOlder ? "Carregando…" : "Carregar mensagens anteriores"}
+            </button>
+          )}
           {messages.length === 0 ? (
             <Empty icon={<MessageCircle />} title="Nenhuma mensagem ainda">
               As mensagens desta conversa aparecerão aqui.
@@ -391,8 +740,14 @@ function ConversationView({
                     </div>
                   )}
                   <article
-                    className={`message-bubble ${outbound ? "outbound" : "inbound"}`}
+                    className={`message-bubble ${outbound ? "outbound" : message.direction === "internal" ? "internal" : "inbound"}`}
                   >
+                    {message.direction === "internal" && (
+                      <strong className="message-sender">
+                        <StickyNote size={13} /> Nota interna ·{" "}
+                        {message.sender_name}
+                      </strong>
+                    )}
                     {conversation.is_group &&
                       !outbound &&
                       message.sender_name && (
@@ -400,15 +755,60 @@ function ConversationView({
                           {message.sender_name}
                         </strong>
                       )}
+                    {message.has_media && (
+                      <div className="message-media">
+                        {message.media_mime?.startsWith("image/") ? (
+                          <a
+                            href={`/api/inbox/${conversationId}/messages/${message.id}/media`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <img
+                              src={`/api/inbox/${conversationId}/messages/${message.id}/media`}
+                              alt={message.media_name ?? "Imagem recebida"}
+                              loading="lazy"
+                            />
+                          </a>
+                        ) : message.media_mime?.startsWith("audio/") ? (
+                          <audio
+                            controls
+                            preload="none"
+                            src={`/api/inbox/${conversationId}/messages/${message.id}/media`}
+                            aria-label={
+                              message.media_name ?? "Mensagem de áudio"
+                            }
+                          />
+                        ) : message.media_mime?.startsWith("video/") ? (
+                          <video
+                            controls
+                            preload="metadata"
+                            src={`/api/inbox/${conversationId}/messages/${message.id}/media`}
+                            aria-label={message.media_name ?? "Vídeo recebido"}
+                          />
+                        ) : (
+                          <a
+                            href={`/api/inbox/${conversationId}/messages/${message.id}/media`}
+                            download
+                          >
+                            <Download size={16} />
+                            {message.media_name ?? "Baixar arquivo"}
+                          </a>
+                        )}
+                      </div>
+                    )}
                     <p>
-                      {message.body || (
-                        <span className="media-placeholder">
-                          <FileText size={15} />
-                          {message.media_name ||
-                            mediaLabels[message.kind] ||
-                            "Arquivo"}
-                        </span>
-                      )}
+                      {message.body ||
+                        (!message.has_media && (
+                          <span className="media-placeholder">
+                            <FileText size={15} />
+                            {message.media_name ||
+                              mediaLabels[message.kind] ||
+                              "Arquivo"}
+                            {message.kind !== "text" && (
+                              <span> · indisponível no Caju</span>
+                            )}
+                          </span>
+                        ))}
                     </p>
                     <footer>
                       <time dateTime={message.sent_at}>
@@ -416,8 +816,32 @@ function ConversationView({
                       </time>
                       {outbound && (
                         <>
-                          <CheckCheck size={13} />
-                          <span className="sr-only">Enviada</span>
+                          {message.status === "read" ||
+                          message.status === "delivered" ? (
+                            <CheckCheck size={13} />
+                          ) : message.status === "sent" ? (
+                            <Check size={13} />
+                          ) : message.status === "uncertain" ||
+                            message.status === "failed" ? (
+                            <AlertCircle size={13} />
+                          ) : (
+                            <Clock3 size={13} />
+                          )}
+                          <span>
+                            {
+                              (
+                                {
+                                  queued: "Na fila",
+                                  sending: "Enviando",
+                                  uncertain: "Envio sem confirmação",
+                                  failed: "Falhou",
+                                  sent: "Enviada",
+                                  delivered: "Entregue",
+                                  read: "Lida",
+                                } as Record<string, string>
+                              )[message.status]
+                            }
+                          </span>
                         </>
                       )}
                     </footer>
@@ -427,6 +851,218 @@ function ConversationView({
             })
           )}
         </div>
+      )}
+      {newBelow && (
+        <button
+          className="button secondary new-messages"
+          onClick={() => {
+            stream.current?.scrollTo({ top: stream.current.scrollHeight });
+            setNewBelow(false);
+          }}
+        >
+          <ArrowDown size={15} /> Novas mensagens
+        </button>
+      )}
+      {conversation.status === "closed" ? (
+        <div className="conversation-closed">
+          <CheckCheck size={18} />
+          <div>
+            <strong>Atendimento finalizado</strong>
+            <p>{conversation.closed_reason}</p>
+          </div>
+          {canChange && (
+            <button
+              className="button secondary"
+              disabled={saving}
+              onClick={() => change({ status: "open" })}
+            >
+              Reabrir
+            </button>
+          )}
+        </div>
+      ) : (
+        <form
+          className={`message-composer ${internal ? "is-internal" : ""}`}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void send();
+          }}
+        >
+          <div
+            className="composer-modes"
+            role="group"
+            aria-label="Tipo de mensagem"
+          >
+            <button
+              type="button"
+              aria-pressed={!internal}
+              onClick={() => switchMode(false)}
+              disabled={sending}
+            >
+              <MessageCircle size={15} /> Responder
+            </button>
+            <button
+              type="button"
+              aria-pressed={internal}
+              onClick={() => switchMode(true)}
+              disabled={sending}
+            >
+              <StickyNote size={15} /> Nota interna
+            </button>
+            <button
+              type="button"
+              className="quick-toggle"
+              aria-expanded={quickOpen}
+              onClick={() => setQuickOpen(!quickOpen)}
+              disabled={sending}
+            >
+              <Zap size={15} /> Respostas rápidas
+            </button>
+          </div>
+          {!internal && attachment && (
+            <div className="composer-attachment">
+              <Paperclip size={15} />
+              <span>{attachment.name}</span>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Remover anexo"
+                disabled={sending}
+                onClick={() => updateAttachment(null)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
+          {quickOpen && (
+            <div className="composer-quick">
+              {quick.isPending ? (
+                <Spinner />
+              ) : quick.error ? (
+                <Retry error={quick.error} retry={() => quick.refetch()} />
+              ) : !quick.data?.length ? (
+                <p>Cadastre suas mensagens em Respostas rápidas.</p>
+              ) : (
+                quick.data.map((reply) => (
+                  <button
+                    type="button"
+                    key={reply.id}
+                    onClick={() => {
+                      updateDraft(reply.body);
+                      setQuickOpen(false);
+                      composer.current?.focus();
+                    }}
+                  >
+                    <strong>{reply.title}</strong>
+                    <span>/{reply.shortcut}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+          <label className="sr-only" htmlFor={`message-${conversationId}`}>
+            {internal ? "Nota interna" : "Mensagem"}
+          </label>
+          <textarea
+            id={`message-${conversationId}`}
+            ref={composer}
+            value={draft}
+            maxLength={4000}
+            disabled={sending || (!own && !internal)}
+            placeholder={
+              internal
+                ? "Deixe o contexto que a equipe precisa. Só vocês podem ver."
+                : own
+                  ? "Escreva sua mensagem…"
+                  : "Assuma o atendimento para responder ao cliente."
+            }
+            onChange={(e) => updateDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                (e.ctrlKey || e.metaKey) &&
+                !e.nativeEvent.isComposing
+              ) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <div className="composer-bottom">
+            {!internal && (
+              <label
+                className="attach-button"
+                title="Anexar arquivo de até 10 MB"
+              >
+                <Paperclip size={18} />
+                <span className="sr-only">Anexar arquivo</span>
+                <input
+                  type="file"
+                  aria-label="Anexar arquivo"
+                  disabled={sending || !own}
+                  accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,audio/mpeg,audio/ogg,audio/wav,video/mp4"
+                  onChange={(e) => {
+                    void attach(e.target.files?.[0]);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+            )}
+            <small>
+              {internal
+                ? "Visível apenas para sua equipe"
+                : "Ctrl + Enter para enviar"}
+              {draft.length > 3500 && ` · ${draft.length}/4000`}
+            </small>
+            <button
+              className="button"
+              disabled={
+                sending ||
+                (!draft.trim() && (internal || !attachment)) ||
+                (!own && !internal)
+              }
+            >
+              {sending ? (
+                <Spinner />
+              ) : internal ? (
+                <StickyNote size={16} />
+              ) : (
+                <Send size={16} />
+              )}
+              {internal ? "Adicionar nota" : "Enviar mensagem"}
+            </button>
+          </div>
+        </form>
+      )}
+      {closing && (
+        <Modal
+          title="Finalizar atendimento"
+          onClose={() => !saving && setClosing(false)}
+        >
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void change({ status: "closed", reason });
+            }}
+          >
+            <label className="field">
+              Motivo da finalização
+              <textarea
+                aria-label="Motivo da finalização"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                minLength={3}
+                maxLength={500}
+                required
+                placeholder="Ex.: dúvida resolvida e orientações enviadas"
+              />
+            </label>
+            <ErrorMessage error={error} />
+            <button className="button" disabled={saving}>
+              {saving ? "Finalizando…" : "Confirmar finalização"}
+            </button>
+          </form>
+        </Modal>
       )}
     </section>
   );
