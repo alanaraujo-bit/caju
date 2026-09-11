@@ -119,8 +119,14 @@ export type Contact = {
   notes: string;
   tags: Tag[];
   tag_ids?: string[];
+  conversation_id?: string | null;
   created_at: string;
   updated_at: string;
+};
+// +5511912345678 → +55 11 91234-5678; outros países ficam como vieram.
+export const phoneLabel = (value: string | null | undefined) => {
+  const m = value?.match(/^\+55(\d{2})(\d{4,5})(\d{4})$/);
+  return m ? `+55 ${m[1]} ${m[2]}-${m[3]}` : (value ?? null);
 };
 export type Member = {
   id: string;

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import {
   api,
+  phoneLabel,
   type Contact,
   type Tag,
   type QuickReply,
@@ -171,7 +172,7 @@ export function Contacts() {
                         </span>
                       </Link>
                     </td>
-                    <td className="tabular">{c.phone}</td>
+                    <td className="tabular">{phoneLabel(c.phone)}</td>
                     <td>
                       <div className="tag-list">
                         {c.tags.length ? (
@@ -268,13 +269,24 @@ export function ContactEditor() {
         back="/contatos"
         action={
           id && (
-            <button
-              className="button secondary"
-              onClick={() => setReturnForm(!returnForm)}
-            >
-              <CalendarClock size={18} />
-              {returnForm ? "Fechar retorno" : "Marcar retorno"}
-            </button>
+            <div className="page-actions">
+              {c?.conversation_id && (
+                <Link
+                  className="button secondary"
+                  to={`/inbox?c=${c.conversation_id}`}
+                >
+                  <MessageSquareText size={18} />
+                  Abrir atendimento
+                </Link>
+              )}
+              <button
+                className="button secondary"
+                onClick={() => setReturnForm(!returnForm)}
+              >
+                <CalendarClock size={18} />
+                {returnForm ? "Fechar retorno" : "Marcar retorno"}
+              </button>
+            </div>
           )
         }
       />

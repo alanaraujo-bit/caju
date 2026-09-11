@@ -586,6 +586,12 @@ time {
   gap: 24px;
   margin-bottom: 35px;
 }
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
 .page-heading p {
   font-size: 15px;
   margin-top: 8px;

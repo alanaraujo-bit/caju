@@ -362,7 +362,9 @@ export async function workspaceRoutes(app: FastifyInstance) {
         const {
           rows: [contact],
         } = await db.query(
-          "SELECT c.*,coalesce((SELECT json_agg(tag_id) FROM contact_tags WHERE contact_id=c.id),'[]') AS tag_ids FROM contacts c WHERE id=$1 AND NOT archived",
+          `SELECT c.*,coalesce((SELECT json_agg(tag_id) FROM contact_tags WHERE contact_id=c.id),'[]') AS tag_ids,
+           (SELECT id FROM conversations WHERE contact_id=c.id ORDER BY last_message_at DESC NULLS LAST,updated_at DESC LIMIT 1) AS conversation_id
+           FROM contacts c WHERE id=$1 AND NOT archived`,
           [id(req)],
         );
         if (!contact) throw new AppError(404, "Contato não encontrado.");

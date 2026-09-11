@@ -31,7 +31,7 @@ import {
   UserRound,
   Smartphone,
 } from "lucide-react";
-import { api, type User } from "./api";
+import { api, phoneLabel, type User } from "./api";
 import {
   Avatar,
   Empty,
@@ -41,7 +41,7 @@ import {
   Spinner,
   Modal,
 } from "./ui";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useSession, can, useWorkspace } from "./App";
 
 type Conversation = {
@@ -190,11 +190,24 @@ const dayLabel = (d: Date) =>
       : d.getFullYear() === new Date().getFullYear()
         ? longDate.format(d)
         : fullDate.format(d);
-const phoneLabel = (value: string | null) => {
-  // +5511912345678 → +55 11 91234-5678; outros países ficam como vieram.
-  const m = value?.match(/^\+55(\d{2})(\d{4,5})(\d{4})$/);
-  return m ? `+55 ${m[1]} ${m[2]}-${m[3]}` : value;
-};
+
+const placeholderConversation = (id: string): Conversation => ({
+  id,
+  protocol: "",
+  status: "waiting",
+  unread_count: 0,
+  last_message_at: null,
+  last_message_preview: "",
+  last_message_from_me: false,
+  is_group: false,
+  contact_name: "Atendimento",
+  contact_phone: null,
+  assignee_name: null,
+  department_name: null,
+  assignee_id: null,
+  department_id: null,
+  version: 1,
+});
 
 function useIsMobile() {
   const [mobile, setMobile] = useState(
@@ -210,11 +223,23 @@ function useIsMobile() {
 }
 
 export function Inbox() {
+  // /inbox?c=<id> abre um atendimento específico (vindo do contato ou de um link compartilhado).
+  const [params, setParams] = useSearchParams();
+  const linked = params.get("c");
   const [status, setStatus] = useState("all"),
     [q, setQ] = useState(""),
-    [selected, setSelected] = useState<string | null>(null),
+    [selected, setSelected] = useState<string | null>(linked),
+    // Só o atendimento vindo do link abre fora da lista; ao filtrar ou tocar em outro, volta ao normal.
+    [pinned, setPinned] = useState<string | null>(linked),
     [offset, setOffset] = useState(0);
   const mobile = useIsMobile();
+  useEffect(() => {
+    if (linked) {
+      setSelected(linked);
+      setPinned(linked);
+      setParams({}, { replace: true });
+    }
+  }, [linked]);
   const list = useQuery({
     queryKey: ["inbox", q, status, offset],
     queryFn: () =>
@@ -228,9 +253,15 @@ export function Inbox() {
   useEffect(() => {
     if (!mobile && !selected && items[0]) setSelected(items[0].id);
   }, [mobile, selected, items[0]?.id]);
+  const filtersTouched = useRef(false);
   useEffect(() => {
+    if (!filtersTouched.current) {
+      filtersTouched.current = true;
+      return;
+    }
     setOffset(0);
     setSelected(null);
+    setPinned(null);
   }, [q, status]);
   const counts = list.data?.counts ?? {};
   const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
@@ -246,7 +277,11 @@ export function Inbox() {
   // No desktop a primeira conversa abre sozinha; no celular só a que a pessoa tocou, senão a lista fica inacessível.
   const active =
     items.find((item) => item.id === selected) ??
-    (mobile ? undefined : items[0]);
+    (selected && selected === pinned && list.data
+      ? placeholderConversation(selected)
+      : mobile
+        ? undefined
+        : items[0]);
   const filtering = q.trim() !== "" || status !== "all";
   const move = (offset: number) => {
     const index = items.findIndex((item) => item.id === active?.id);
@@ -297,7 +332,7 @@ export function Inbox() {
           }
         />
       )}
-      {items.length === 0 ? (
+      {items.length === 0 && !active ? (
         filtering ? (
           <Empty
             icon={<SearchX />}
@@ -337,7 +372,10 @@ export function Inbox() {
                 key={item.id}
                 className={`inbox-row ${active?.id === item.id ? "selected" : ""} ${item.unread_count > 0 ? "unread" : ""}`}
                 aria-current={active?.id === item.id ? "true" : undefined}
-                onClick={() => setSelected(item.id)}
+                onClick={() => {
+                  setSelected(item.id);
+                  setPinned(null);
+                }}
               >
                 <Avatar name={item.contact_name} />
                 <span className="inbox-row-main">
