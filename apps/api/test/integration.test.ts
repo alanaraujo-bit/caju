@@ -8,6 +8,7 @@ import { migrate } from "../src/migrate.js";
 let ingestIncomingMessage: typeof import("../src/inbox-ingest.js").ingestIncomingMessage;
 let dispatchOutbox: typeof import("../src/outbox.js").dispatchOutbox;
 let recordReceipt: typeof import("../src/outbox.js").recordReceipt;
+let normalizeIncoming: typeof import("../src/whatsapp-manager.js").normalizeIncoming;
 const testName = `caju_test_${randomUUID().replaceAll("-", "")}`;
 const admin = new pg.Client({
   connectionString: process.env.MIGRATION_DATABASE_URL,
@@ -34,6 +35,18 @@ const whatsappGateway = {
   },
   state(connectionId: string) {
     return whatsappStates.get(connectionId);
+  },
+  readKeys: [] as {
+    remoteJid: string;
+    id: string;
+    participant?: string | null;
+  }[],
+  async markRead(
+    _connectionId: string,
+    keys: { remoteJid: string; id: string; participant?: string | null }[],
+  ) {
+    this.readKeys.push(...keys);
+    return true;
   },
   async resumeAll() {},
   async close() {},
@@ -81,6 +94,7 @@ before(async () => {
   process.env.DATABASE_URL = runtimeURL.toString();
   ({ ingestIncomingMessage } = await import("../src/inbox-ingest.js"));
   ({ dispatchOutbox, recordReceipt } = await import("../src/outbox.js"));
+  ({ normalizeIncoming } = await import("../src/whatsapp-manager.js"));
   await migrate(migrationURL.toString());
   const db = await import("../src/db.js");
   pool = db.pool;
@@ -466,33 +480,266 @@ test("atendimento: concorrência, fila durável, idempotência, recibos e histó
   );
 });
 
+test("mensagens sem anexo (localização, contato, enquete) entram no histórico; sinais de protocolo não", async () => {
+  const key = (id: string) => ({
+    remoteJid: "5511977776666@s.whatsapp.net",
+    id,
+    fromMe: false,
+  });
+  const location = normalizeIncoming({
+    key: key("loc-1"),
+    messageTimestamp: 1789000000,
+    pushName: "Cliente",
+    message: {
+      locationMessage: {
+        degreesLatitude: -23.55052,
+        degreesLongitude: -46.633308,
+        name: "Praça da Sé",
+        address: "Centro, São Paulo",
+      },
+    },
+  });
+  assert.equal(location?.kind, "location");
+  assert.equal(
+    location!.body,
+    "Praça da Sé — Centro, São Paulo\nhttps://maps.google.com/?q=-23.550520,-46.633308",
+  );
+  const contact = normalizeIncoming({
+    key: key("vc-1"),
+    message: {
+      contactMessage: {
+        displayName: "Dra. Lima",
+        vcard:
+          "BEGIN:VCARD\nVERSION:3.0\nFN:Dra. Lima\nTEL;type=CELL;waid=5511988887777:+55 11 98888-7777\nEND:VCARD",
+      },
+    },
+  });
+  assert.equal(contact?.kind, "contact");
+  assert.equal(contact?.body, "Dra. Lima · +55 11 98888-7777");
+  const poll = normalizeIncoming({
+    key: key("poll-1"),
+    message: {
+      pollCreationMessageV3: {
+        name: "Melhor horário?",
+        options: [{ optionName: "Manhã" }, { optionName: "Tarde" }],
+      },
+    },
+  });
+  assert.equal(poll?.kind, "poll");
+  assert.equal(poll?.body, "Melhor horário?\n• Manhã\n• Tarde");
+  const group = normalizeIncoming({
+    key: {
+      remoteJid: "120363000000000009@g.us",
+      id: "g-1",
+      participant: "5511955554444@s.whatsapp.net",
+    },
+    message: {
+      extendedTextMessage: { text: "Oi", contextInfo: { stanzaId: "orig-1" } },
+    },
+  });
+  assert.equal(group?.senderJid, "5511955554444@s.whatsapp.net");
+  assert.equal(group?.replyToExternalId, "orig-1");
+  assert.equal(
+    normalizeIncoming({
+      key: key("react-1"),
+      message: { reactionMessage: { text: "👍", key: key("loc-1") } },
+    }),
+    null,
+  );
+  assert.equal(
+    normalizeIncoming({
+      key: key("del-1"),
+      message: { protocolMessage: { type: 0, key: key("loc-1") } },
+    }),
+    null,
+  );
+  assert.equal(
+    normalizeIncoming({
+      key: { remoteJid: "status@broadcast", id: "s-1" },
+      message: { conversation: "status" },
+    }),
+    null,
+  );
+  const unknown = normalizeIncoming({
+    key: key("fut-1"),
+    message: { someFutureMessage: { foo: 1 } },
+  });
+  assert.equal(unknown?.kind, "unknown");
+  const connectionId = randomUUID();
+  await tx(tenantA, (db) =>
+    db.query(
+      "INSERT INTO whatsapp_connections(id,tenant_id,label,status) VALUES($1,$2,'Tipos de teste','attention')",
+      [connectionId, tenantA],
+    ),
+  );
+  const result = await ingestIncomingMessage(tenantA, connectionId, {
+    ...location!,
+    sentAt: new Date(),
+  });
+  const inbox = (await call("GET", "/api/inbox?q=Praça", undefined, a)).json();
+  assert.equal(inbox.items[0].id, result!.conversationId);
+  assert.equal(
+    inbox.items[0].last_message_preview,
+    "Localização · Praça da Sé — Centro, São Paulo",
+  );
+  const details = (
+    await call(
+      "GET",
+      `/api/inbox/${result!.conversationId}/messages`,
+      undefined,
+      a,
+    )
+  ).json();
+  assert.equal(details.messages[0].kind, "location");
+  assert.equal(
+    (
+      await call(
+        "POST",
+        `/api/inbox/${result!.conversationId}/read`,
+        { throughId: details.messages[0].id },
+        a,
+      )
+    ).statusCode,
+    200,
+  );
+  assert.deepEqual(
+    whatsappGateway.readKeys.filter((k) => k.id === "loc-1"),
+    [
+      {
+        remoteJid: "5511977776666@s.whatsapp.net",
+        id: "loc-1",
+        participant: null,
+      },
+    ],
+  );
+  // Recibo enviado uma vez: a próxima leitura não repete a chave.
+  await call(
+    "POST",
+    `/api/inbox/${result!.conversationId}/read`,
+    { throughId: details.messages[0].id },
+    a,
+  );
+  assert.equal(
+    whatsappGateway.readKeys.filter((k) => k.id === "loc-1").length,
+    1,
+  );
+});
+
 test("mídia privada valida conteúdo, mantém idempotência e impede acesso cruzado", async () => {
   const connectionId = randomUUID();
-  await tx(tenantA, (db) => db.query("INSERT INTO whatsapp_connections(id,tenant_id,label,status) VALUES($1,$2,'Mídia de teste','attention')", [connectionId, tenantA]));
-  const result = await ingestIncomingMessage(tenantA, connectionId, { externalId: "media-inbound", remoteJid: "5511999997777@s.whatsapp.net", fromMe: false, kind: "text", body: "Pode mandar o documento?", sentAt: new Date() });
+  await tx(tenantA, (db) =>
+    db.query(
+      "INSERT INTO whatsapp_connections(id,tenant_id,label,status) VALUES($1,$2,'Mídia de teste','attention')",
+      [connectionId, tenantA],
+    ),
+  );
+  const result = await ingestIncomingMessage(tenantA, connectionId, {
+    externalId: "media-inbound",
+    remoteJid: "5511999997777@s.whatsapp.net",
+    fromMe: false,
+    kind: "text",
+    body: "Pode mandar o documento?",
+    sentAt: new Date(),
+  });
   const id = result!.conversationId;
-  const details = (await call("GET", `/api/inbox/${id}/messages`, undefined, a)).json();
+  const details = (
+    await call("GET", `/api/inbox/${id}/messages`, undefined, a)
+  ).json();
   const me = (await call("GET", "/api/auth/me", undefined, a)).json().user;
-  await call("PATCH", `/api/inbox/${id}`, { version: details.conversation.version, assigneeId: me.membershipId, status: "open" }, a);
-  const attachment = { name: "comprovante.pdf", base64: Buffer.from("%PDF-1.4\n% Documento de teste isolado\n%%EOF").toString("base64") };
+  await call(
+    "PATCH",
+    `/api/inbox/${id}`,
+    {
+      version: details.conversation.version,
+      assigneeId: me.membershipId,
+      status: "open",
+    },
+    a,
+  );
+  const attachment = {
+    name: "comprovante.pdf",
+    base64: Buffer.from(
+      "%PDF-1.4\n% Documento de teste isolado\n%%EOF",
+    ).toString("base64"),
+  };
   const requestId = randomUUID();
-  const posted = await call("POST", `/api/inbox/${id}/messages`, { requestId, attachment }, a);
+  const posted = await call(
+    "POST",
+    `/api/inbox/${id}/messages`,
+    { requestId, attachment },
+    a,
+  );
   assert.equal(posted.statusCode, 201, posted.body);
   const messageId = posted.json().id;
-  assert.equal((await call("POST", `/api/inbox/${id}/messages`, { requestId, attachment }, a)).json().id, messageId);
-  assert.equal((await call("POST", `/api/inbox/${id}/messages`, { requestId, attachment: { ...attachment, name: "outro.pdf" } }, a)).statusCode, 409);
+  assert.equal(
+    (
+      await call(
+        "POST",
+        `/api/inbox/${id}/messages`,
+        { requestId, attachment },
+        a,
+      )
+    ).json().id,
+    messageId,
+  );
+  assert.equal(
+    (
+      await call(
+        "POST",
+        `/api/inbox/${id}/messages`,
+        { requestId, attachment: { ...attachment, name: "outro.pdf" } },
+        a,
+      )
+    ).statusCode,
+    409,
+  );
   const url = `/api/inbox/${id}/messages/${messageId}/media`;
   const media = await call("GET", url, undefined, a);
-  assert.equal(media.statusCode, 200); assert.equal(media.headers["content-type"], "application/pdf");
+  assert.equal(media.statusCode, 200);
+  assert.equal(media.headers["content-type"], "application/pdf");
   assert.match(String(media.headers["content-disposition"]), /^attachment/);
   assert.match(String(media.headers["cache-control"]), /no-store/);
   assert.deepEqual(media.rawPayload, Buffer.from(attachment.base64, "base64"));
   assert.equal((await call("GET", url, undefined, b)).statusCode, 404);
   assert.equal((await call("GET", url)).statusCode, 401);
-  assert.equal((await call("POST", `/api/inbox/${id}/messages`, { requestId: randomUUID(), attachment: { name: "imagem.png", base64: Buffer.from("<html>Não é imagem</html>").toString("base64") } }, a)).statusCode, 400);
-  assert.equal((await call("POST", `/api/inbox/${id}/messages`, { requestId: randomUUID(), internal: true, attachment }, a)).statusCode, 400);
+  assert.equal(
+    (
+      await call(
+        "POST",
+        `/api/inbox/${id}/messages`,
+        {
+          requestId: randomUUID(),
+          attachment: {
+            name: "imagem.png",
+            base64: Buffer.from("<html>Não é imagem</html>").toString("base64"),
+          },
+        },
+        a,
+      )
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await call(
+        "POST",
+        `/api/inbox/${id}/messages`,
+        { requestId: randomUUID(), internal: true, attachment },
+        a,
+      )
+    ).statusCode,
+    400,
+  );
   let delivered = false;
-  await dispatchOutbox(tenantA, connectionId, async (_jid, _body, _externalId, file) => { assert.equal(file?.mime, "application/pdf"); assert.deepEqual(file?.content, media.rawPayload); delivered = true; });
+  await dispatchOutbox(
+    tenantA,
+    connectionId,
+    async (_jid, _body, _externalId, file) => {
+      assert.equal(file?.mime, "application/pdf");
+      assert.deepEqual(file?.content, media.rawPayload);
+      delivered = true;
+    },
+  );
   assert.equal(delivered, true);
 });
 

@@ -6,6 +6,7 @@ export type IncomingMessage = {
   externalId: string;
   remoteJid: string;
   phoneJid?: string | null;
+  senderJid?: string | null;
   title?: string | null;
   fromMe: boolean;
   pushName?: string | null;
@@ -25,6 +26,18 @@ function phoneFromJid(jid: string | null | undefined) {
 }
 
 function preview(message: IncomingMessage) {
+  const special = (
+    { location: "Localização", contact: "Contato", poll: "Enquete" } as Record<
+      string,
+      string
+    >
+  )[message.kind];
+  if (special) {
+    const line = message.body?.split("\n")[0]?.trim();
+    return line && !/^https?:/.test(line)
+      ? `${special} · ${line}`.slice(0, 240)
+      : special;
+  }
   if (message.body?.trim()) return message.body.trim().slice(0, 240);
   const labels: Record<string, string> = {
     image: "Imagem",
@@ -34,6 +47,10 @@ function preview(message: IncomingMessage) {
       ? `Documento · ${message.mediaName}`
       : "Documento",
     sticker: "Figurinha",
+    location: "Localização",
+    contact: "Contato compartilhado",
+    poll: "Enquete",
+    unknown: "Mensagem sem visualização no Caju",
   };
   return labels[message.kind] ?? "Mensagem recebida";
 }
@@ -101,8 +118,8 @@ export async function ingestIncomingMessage(
         [message.title, actualConversationId],
       );
     const { rows } = await db.query(
-      `INSERT INTO messages(id,tenant_id,conversation_id,whatsapp_connection_id,external_id,direction,kind,body,media_name,sender_name,sent_at,status,reply_to_external_id)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      `INSERT INTO messages(id,tenant_id,conversation_id,whatsapp_connection_id,external_id,direction,kind,body,media_name,sender_name,sent_at,status,reply_to_external_id,sender_jid)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        ON CONFLICT(tenant_id,whatsapp_connection_id,external_id) DO NOTHING RETURNING id`,
       [
         randomUUID(),
@@ -118,6 +135,7 @@ export async function ingestIncomingMessage(
         message.sentAt,
         direction === "inbound" ? "received" : "sent",
         message.replyToExternalId ?? null,
+        message.senderJid ?? null,
       ],
     );
     if (!rows.length) {

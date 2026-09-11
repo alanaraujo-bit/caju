@@ -33,6 +33,11 @@ export interface WhatsAppGateway {
   reconnect(tenantId: string, connectionId: string): Promise<void>;
   remove(tenantId: string, connectionId: string): Promise<void>;
   state(connectionId: string): WhatsAppRuntimeState | undefined;
+  // Confirma leitura ao cliente (tique azul). Só o dono da conexão consegue; falha em silêncio.
+  markRead(
+    connectionId: string,
+    keys: { remoteJid: string; id: string; participant?: string | null }[],
+  ): Promise<boolean>;
   resumeAll(): Promise<void>;
   close(): Promise<void>;
 }
@@ -216,30 +221,113 @@ function messageTimestamp(value: unknown) {
   return new Date();
 }
 
-function normalizeIncoming(message: any) {
-  if (!/@(s\.whatsapp\.net|lid|g\.us)$/.test(message?.key?.remoteJid ?? "")) return null;
+// Localização, contato e enquete não viram anexo, mas precisam aparecer no histórico:
+// um buraco silencioso na conversa é pior que um resumo em texto.
+function vcardSummary(vcard: string) {
+  const name = vcard.match(/^FN:(.+)$/m)?.[1]?.trim();
+  const phones = [...vcard.matchAll(/^TEL[^:]*:(.+)$/gm)]
+    .map((m) => m[1].trim())
+    .filter(Boolean);
+  return [name, ...new Set(phones)].filter(Boolean).join(" · ");
+}
+function describeSpecial(kind: string, entry: any) {
+  if (kind === "locationMessage" || kind === "liveLocationMessage") {
+    const lat = Number(entry?.degreesLatitude),
+      lng = Number(entry?.degreesLongitude);
+    const label = [entry?.name, entry?.address].filter(Boolean).join(" — ");
+    const link =
+      Number.isFinite(lat) && Number.isFinite(lng)
+        ? `https://maps.google.com/?q=${lat.toFixed(6)},${lng.toFixed(6)}`
+        : "";
+    return { kind: "location", body: [label, link].filter(Boolean).join("\n") };
+  }
+  if (kind === "contactMessage")
+    return {
+      kind: "contact",
+      body:
+        vcardSummary(String(entry?.vcard ?? "")) ||
+        String(entry?.displayName ?? ""),
+    };
+  if (kind === "contactsArrayMessage")
+    return {
+      kind: "contact",
+      body: ((entry?.contacts ?? []) as any[])
+        .map((c) => vcardSummary(String(c?.vcard ?? "")) || c?.displayName)
+        .filter(Boolean)
+        .join("\n"),
+    };
+  if (kind.startsWith("pollCreationMessage"))
+    return {
+      kind: "poll",
+      body: [
+        entry?.name,
+        ...((entry?.options ?? []) as any[]).map(
+          (o) => `• ${o?.optionName ?? ""}`,
+        ),
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    };
+  return { kind: "unknown", body: "" };
+}
+
+const mediaKinds = [
+  "imageMessage",
+  "videoMessage",
+  "audioMessage",
+  "documentMessage",
+  "stickerMessage",
+];
+const contentKinds = [
+  "conversation",
+  "extendedTextMessage",
+  ...mediaKinds,
+  "locationMessage",
+  "liveLocationMessage",
+  "contactMessage",
+  "contactsArrayMessage",
+  "pollCreationMessage",
+  "pollCreationMessageV2",
+  "pollCreationMessageV3",
+];
+// Sinais de protocolo (reações, edições, exclusões, chaves) não são mensagens para a equipe.
+const silentKinds = new Set([
+  "protocolMessage",
+  "reactionMessage",
+  "encReactionMessage",
+  "pollUpdateMessage",
+  "senderKeyDistributionMessage",
+  "messageContextInfo",
+  "keepInChatMessage",
+  "pinInChatMessage",
+]);
+
+export function normalizeIncoming(message: any) {
+  if (!/@(s\.whatsapp\.net|lid|g\.us)$/.test(message?.key?.remoteJid ?? ""))
+    return null;
   // View-once media is intentionally not copied into the shared history.
-  if (message?.message?.viewOnceMessage || message?.message?.viewOnceMessageV2 || message?.message?.viewOnceMessageV2Extension) return null;
+  if (
+    message?.message?.viewOnceMessage ||
+    message?.message?.viewOnceMessageV2 ||
+    message?.message?.viewOnceMessageV2Extension
+  )
+    return null;
   const content = normalizeMessageContent(message?.message);
   if (!message?.key?.id || !message?.key?.remoteJid || !content) return null;
+  const entries = Object.entries(content).filter(
+    ([name, value]) => value && !silentKinds.has(name),
+  );
+  if (!entries.length) return null;
   const [kind, value] =
-    Object.entries(content).find(([name]) =>
-      [
-        "conversation",
-        "extendedTextMessage",
-        "imageMessage",
-        "videoMessage",
-        "audioMessage",
-        "documentMessage",
-        "stickerMessage",
-      ].includes(name),
-    ) ?? [];
-  if (!kind) return null;
+    entries.find(([name]) => contentKinds.includes(name)) ?? entries[0];
   const entry = value as any;
+  const special = describeSpecial(kind, entry);
   const body =
     kind === "conversation"
       ? String(value ?? "")
-      : (entry?.text ?? entry?.caption ?? "");
+      : kind === "extendedTextMessage" || mediaKinds.includes(kind)
+        ? (entry?.text ?? entry?.caption ?? "")
+        : special.body;
   return {
     externalId: String(message.key.id),
     remoteJid: String(message.key.remoteJid),
@@ -247,18 +335,25 @@ function normalizeIncoming(message: any) {
     phoneJid: message.key.remoteJidAlt
       ? String(message.key.remoteJidAlt)
       : null,
+    // Em grupos, o autor real vem em participant; é ele quem recebe o recibo de leitura.
+    senderJid: message.key.participant ? String(message.key.participant) : null,
     fromMe: Boolean(message.key.fromMe),
     pushName: message.pushName ?? null,
     kind:
       kind === "conversation" || kind === "extendedTextMessage"
         ? "text"
-        : kind.replace("Message", "").toLowerCase(),
+        : mediaKinds.includes(kind)
+          ? kind.replace("Message", "").toLowerCase()
+          : special.kind,
     body: String(body),
     mediaName: entry?.fileName ?? null,
-    mediaSource: typeof entry === "object" && entry?.mediaKey ? entry : null,
+    mediaSource:
+      mediaKinds.includes(kind) && entry?.mediaKey && entry?.directPath
+        ? entry
+        : null,
     sentAt: messageTimestamp(message.messageTimestamp),
     replyToExternalId:
-      message.message?.extendedTextMessage?.contextInfo?.stanzaId ?? null,
+      (typeof entry === "object" && entry?.contextInfo?.stanzaId) || null,
   } as const;
 }
 
@@ -269,6 +364,34 @@ export class BaileysGateway implements WhatsAppGateway {
 
   state(connectionId: string) {
     return this.live.get(connectionId)?.runtime;
+  }
+
+  async markRead(
+    connectionId: string,
+    keys: { remoteJid: string; id: string; participant?: string | null }[],
+  ) {
+    const connection = this.live.get(connectionId);
+    if (
+      !connection?.socket ||
+      connection.stopped ||
+      connection.runtime.status !== "connected" ||
+      !keys.length
+    )
+      return false;
+    try {
+      await connection.socket.readMessages(
+        keys.map((key) => ({
+          remoteJid: key.remoteJid,
+          id: key.id,
+          participant: key.participant ?? undefined,
+          fromMe: false,
+        })),
+      );
+      return true;
+    } catch (error) {
+      log.warn({ err: error, connectionId }, "falha ao confirmar leitura");
+      return false;
+    }
   }
 
   async start(tenantId: string, connectionId: string) {
@@ -288,6 +411,9 @@ export class BaileysGateway implements WhatsAppGateway {
       15_000,
     );
     connection.heartbeat.unref();
+    // A concessão é renovada pelo heartbeat; o tick só consulta a fila. Envios
+    // travados em "sending" são varridos a cada 30 ticks, não a cada segundo.
+    let ticks = 0;
     connection.outbox = setInterval(() => {
       if (
         connection.stopped ||
@@ -297,43 +423,40 @@ export class BaileysGateway implements WhatsAppGateway {
       )
         return;
       connection.dispatching = true;
-      void this.renew(connectionId, connection)
-        .then(async () => {
-          if (connection.stopped || !connection.socket) return;
-          const socket = connection.socket;
-          await dispatchOutbox(
-            tenantId,
-            connectionId,
-            async (jid, body, externalId, attachment) => {
-              const content = !attachment
-                ? { text: body }
-                : attachment.mime.startsWith("image/")
+      const socket = connection.socket;
+      void dispatchOutbox(
+        tenantId,
+        connectionId,
+        async (jid, body, externalId, attachment) => {
+          const content = !attachment
+            ? { text: body }
+            : attachment.mime.startsWith("image/")
+              ? {
+                  image: attachment.content,
+                  caption: body,
+                  mimetype: attachment.mime,
+                }
+              : attachment.mime.startsWith("audio/")
+                ? { audio: attachment.content, mimetype: attachment.mime }
+                : attachment.mime.startsWith("video/")
                   ? {
-                      image: attachment.content,
+                      video: attachment.content,
                       caption: body,
                       mimetype: attachment.mime,
                     }
-                  : attachment.mime.startsWith("audio/")
-                    ? { audio: attachment.content, mimetype: attachment.mime }
-                    : attachment.mime.startsWith("video/")
-                      ? {
-                          video: attachment.content,
-                          caption: body,
-                          mimetype: attachment.mime,
-                        }
-                      : {
-                          document: attachment.content,
-                          mimetype: attachment.mime,
-                          fileName: attachment.name,
-                          caption: body,
-                        };
-              const sent = await socket.sendMessage(jid, content, {
-                messageId: externalId,
-              });
-              if (!sent) throw new Error("Send not confirmed");
-            },
-          );
-        })
+                  : {
+                      document: attachment.content,
+                      mimetype: attachment.mime,
+                      fileName: attachment.name,
+                      caption: body,
+                    };
+          const sent = await socket.sendMessage(jid, content, {
+            messageId: externalId,
+          });
+          if (!sent) throw new Error("Send not confirmed");
+        },
+        { sweep: ticks++ % 30 === 0 },
+      )
         .catch(() =>
           log.error({ connectionId }, "falha ao processar fila de envio"),
         )

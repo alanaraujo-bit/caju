@@ -3355,6 +3355,57 @@ tr:hover td {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.message-bubble p a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.message-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 3px;
+  color: var(--muted);
+}
+.message-bubble.outbound .message-kind {
+  color: inherit;
+  opacity: 0.85;
+}
+.contact-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 700;
+  color: var(--accent-ink);
+  white-space: nowrap;
+}
+.composer-notice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 6px 0 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.composer-notice svg {
+  flex-shrink: 0;
+}
+.composer-notice span {
+  flex: 1;
+  min-width: 0;
+}
+.composer-notice a {
+  font-weight: 750;
+  color: inherit;
+  white-space: nowrap;
+}
 .message-sender {
   display: block;
   font-size: 12px;

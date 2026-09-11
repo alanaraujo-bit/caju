@@ -5,6 +5,7 @@ import { transaction } from "./db.js";
 import { allow } from "./auth.js";
 import { AppError, audit, limit } from "./security.js";
 import { validateMedia, type Attachment } from "./media.js";
+import type { WhatsAppGateway } from "./whatsapp-manager.js";
 
 const querySchema = z.object({
   q: z.string().max(100).default(""),
@@ -21,7 +22,10 @@ const contactColumns = `
     CASE WHEN c.remote_jid LIKE '%@s.whatsapp.net' THEN '+'||split_part(c.remote_jid,'@',1) WHEN c.remote_jid LIKE '%@g.us' THEN 'Grupo' ELSE 'Contato' END) AS contact_name,
   coalesce(ct.phone,CASE WHEN c.remote_jid LIKE '%@s.whatsapp.net' THEN '+'||split_part(split_part(c.remote_jid,'@',1),':',1) END) AS contact_phone`;
 
-export async function inboxRoutes(app: FastifyInstance) {
+export async function inboxRoutes(
+  app: FastifyInstance,
+  gateway: WhatsAppGateway | null = null,
+) {
   app.get("/api/inbox", { preHandler: allow("inbox:read") }, async (req) => {
     const { q, status, offset } = querySchema.parse(req.query);
     const search = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
@@ -92,7 +96,7 @@ export async function inboxRoutes(app: FastifyInstance) {
       const { throughId } = z
         .object({ throughId: z.uuid().optional() })
         .parse(req.body ?? {});
-      return transaction(req.user.tenantId, async (db) => {
+      const pending = await transaction(req.user.tenantId, async (db) => {
         const { rowCount } = await db.query(
           `UPDATE conversations SET unread_count=(SELECT count(*) FROM messages WHERE conversation_id=$1 AND direction='inbound'
            AND $2::uuid IS NOT NULL AND (sent_at,id)>(SELECT sent_at,id FROM messages WHERE id=$2 AND conversation_id=$1)),updated_at=now() WHERE id=$1`,
@@ -100,8 +104,34 @@ export async function inboxRoutes(app: FastifyInstance) {
         );
         if (!rowCount)
           throw new AppError(404, "Este atendimento não está mais disponível.");
-        return { ok: true };
+        if (!throughId) return null;
+        // O cliente só vê o tique azul quando alguém da equipe realmente abriu a conversa.
+        const { rows } = await db.query(
+          `SELECT m.id,m.external_id,m.sender_jid,c.remote_jid,c.whatsapp_connection_id FROM messages m JOIN conversations c ON c.id=m.conversation_id
+           WHERE m.conversation_id=$1 AND m.direction='inbound' AND m.receipted_at IS NULL
+           AND (m.sent_at,m.id)<=(SELECT sent_at,id FROM messages WHERE id=$2 AND conversation_id=$1) ORDER BY m.sent_at DESC,m.id DESC LIMIT 50`,
+          [conversationId, throughId],
+        );
+        return rows;
       });
+      if (gateway && pending?.length) {
+        const delivered = await gateway.markRead(
+          pending[0].whatsapp_connection_id,
+          pending.map((row) => ({
+            remoteJid: row.remote_jid,
+            id: row.external_id,
+            participant: row.sender_jid,
+          })),
+        );
+        if (delivered)
+          await transaction(req.user.tenantId, (db) =>
+            db.query(
+              "UPDATE messages SET receipted_at=now() WHERE id=ANY($1::uuid[])",
+              [pending.map((row) => row.id)],
+            ),
+          );
+      }
+      return { ok: true };
     },
   );
 

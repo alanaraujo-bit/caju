@@ -115,6 +115,6 @@ export async function buildApp(
   await authRoutes(app);
   await workspaceRoutes(app);
   await whatsappRoutes(app, whatsappGateway);
-  await inboxRoutes(app);
+  await inboxRoutes(app, whatsappGateway);
   return app;
 }

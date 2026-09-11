@@ -14,12 +14,14 @@ export async function dispatchOutbox(
   tenantId: string,
   connectionId: string,
   send: SendText,
+  { sweep = true }: { sweep?: boolean } = {},
 ) {
   const message = await transaction(tenantId, async (db) => {
-    await db.query(
-      "UPDATE messages SET status='uncertain',status_updated_at=now() WHERE whatsapp_connection_id=$1 AND status='sending' AND status_updated_at<now()-interval '60 seconds'",
-      [connectionId],
-    );
+    if (sweep)
+      await db.query(
+        "UPDATE messages SET status='uncertain',status_updated_at=now() WHERE whatsapp_connection_id=$1 AND status='sending' AND status_updated_at<now()-interval '60 seconds'",
+        [connectionId],
+      );
     const { rows } = await db.query(
       `SELECT m.id,m.body,m.external_id,c.remote_jid FROM messages m JOIN conversations c ON c.id=m.conversation_id
        WHERE m.whatsapp_connection_id=$1 AND m.status='queued' ORDER BY m.created_at,m.id LIMIT 1 FOR UPDATE OF m SKIP LOCKED`,

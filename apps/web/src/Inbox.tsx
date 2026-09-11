@@ -24,6 +24,12 @@ import {
   Paperclip,
   X,
   Download,
+  MapPin,
+  Contact,
+  BarChart3,
+  HelpCircle,
+  UserRound,
+  Smartphone,
 } from "lucide-react";
 import { api, type User } from "./api";
 import {
@@ -35,7 +41,8 @@ import {
   Spinner,
   Modal,
 } from "./ui";
-import { useSession, can } from "./App";
+import { Link } from "react-router-dom";
+import { useSession, can, useWorkspace } from "./App";
 
 type Conversation = {
   id: string;
@@ -54,6 +61,7 @@ type Conversation = {
   department_id: string | null;
   version: number;
   closed_reason?: string | null;
+  contact_id?: string | null;
 };
 type Message = {
   id: string;
@@ -99,6 +107,44 @@ const mediaLabels: Record<string, string> = {
   video: "Vídeo",
   sticker: "Figurinha",
   document: "Documento",
+  location: "Localização",
+  contact: "Contato compartilhado",
+  poll: "Enquete",
+  unknown: "Mensagem sem visualização no Caju",
+};
+const kindIcons: Record<string, typeof MapPin> = {
+  location: MapPin,
+  contact: Contact,
+  poll: BarChart3,
+  unknown: HelpCircle,
+};
+// Links do cliente (rastreio, localização, catálogo) precisam abrir sem copiar e colar.
+function linkify(text: string) {
+  const parts = text.split(/(https?:\/\/[^\s<>"']+)/g);
+  return parts.map((part, index) =>
+    /^https?:\/\//.test(part) ? (
+      <a key={index} href={part} target="_blank" rel="noreferrer noopener">
+        {part}
+      </a>
+    ) : (
+      part
+    ),
+  );
+}
+const deliveryLabels: Record<string, string> = {
+  queued: "Na fila",
+  sending: "Enviando",
+  uncertain: "Envio sem confirmação",
+  failed: "Falhou",
+  sent: "Enviada",
+  delivered: "Entregue",
+  read: "Lida",
+};
+const deliveryHints: Record<string, string> = {
+  queued: "Sai assim que o WhatsApp da empresa estiver conectado.",
+  uncertain:
+    "A conexão caiu durante o envio. Confira no celular se chegou antes de escrever de novo.",
+  failed: "O WhatsApp recusou o envio.",
 };
 const clock = new Intl.DateTimeFormat("pt-BR", {
   hour: "2-digit",
@@ -188,6 +234,15 @@ export function Inbox() {
   }, [q, status]);
   const counts = list.data?.counts ?? {};
   const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  // A aba do navegador mostra quantas conversas aguardam, para quem trabalha com várias abas.
+  const waiting = counts.waiting ?? 0;
+  useEffect(() => {
+    const base = "Caju · Atendimento";
+    document.title = waiting > 0 ? `(${waiting}) ${base}` : base;
+    return () => {
+      document.title = base;
+    };
+  }, [waiting]);
   // No desktop a primeira conversa abre sozinha; no celular só a que a pessoa tocou, senão a lista fica inacessível.
   const active =
     items.find((item) => item.id === selected) ??
@@ -356,7 +411,9 @@ function ConversationView({
   onBack: () => void;
 }) {
   const session = useSession(),
-    queryClient = useQueryClient();
+    queryClient = useQueryClient(),
+    workspace = useWorkspace();
+  const whatsappStatus = workspace.data?.whatsapp.status ?? "connected";
   const conversationId = initialConversation.id;
   const mobile = useIsMobile();
   const [internal, setInternal] = useState(false);
@@ -400,7 +457,13 @@ function ConversationView({
   const [error, setError] = useState<unknown>(null),
     [saving, setSaving] = useState(false);
   const stream = useRef<HTMLDivElement>(null),
-    firstScroll = useRef(true);
+    firstScroll = useRef(true),
+    // Imagens carregam depois do primeiro scroll; enquanto a pessoa estiver no fim, seguimos o fim.
+    stickToEnd = useRef(true);
+  const followEnd = () => {
+    const el = stream.current;
+    if (el && stickToEnd.current) el.scrollTop = el.scrollHeight;
+  };
   const details = useQuery({
     queryKey: ["inbox-conversation", conversationId],
     queryFn: () => api<Details>(`/inbox/${conversationId}/messages`),
@@ -444,6 +507,7 @@ function ConversationView({
     const el = stream.current;
     if (!el || !lastId) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+    stickToEnd.current = firstScroll.current || nearBottom;
     if (firstScroll.current || nearBottom)
       el.scrollTo({
         top: el.scrollHeight,
@@ -595,7 +659,9 @@ function ConversationView({
         </button>
         <Avatar name={conversation.contact_name} />
         <div className="conversation-identity">
-          <strong role="heading" aria-level={mobile ? 1 : 2}>{conversation.contact_name}</strong>
+          <strong role="heading" aria-level={mobile ? 1 : 2}>
+            {conversation.contact_name}
+          </strong>
           <small>
             {conversation.is_group
               ? "Grupo"
@@ -603,6 +669,17 @@ function ConversationView({
                 "Número não informado")}
             <span aria-hidden="true"> · </span>
             <span className="protocol">{conversation.protocol}</span>
+            {conversation.contact_id && (
+              <>
+                <span aria-hidden="true"> · </span>
+                <Link
+                  className="contact-link"
+                  to={`/contatos/${conversation.contact_id}`}
+                >
+                  <UserRound size={12} /> Ver contato
+                </Link>
+              </>
+            )}
           </small>
         </div>
         {canChange ? (
@@ -709,8 +786,10 @@ function ConversationView({
           ref={stream}
           onScroll={() => {
             const el = stream.current;
-            if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 80)
-              setNewBelow(false);
+            if (!el) return;
+            stickToEnd.current =
+              el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            if (stickToEnd.current) setNewBelow(false);
           }}
         >
           {(olderHasMore ?? details.data?.hasMore) && (
@@ -767,6 +846,7 @@ function ConversationView({
                               src={`/api/inbox/${conversationId}/messages/${message.id}/media`}
                               alt={message.media_name ?? "Imagem recebida"}
                               loading="lazy"
+                              onLoad={followEnd}
                             />
                           </a>
                         ) : message.media_mime?.startsWith("audio/") ? (
@@ -796,19 +876,30 @@ function ConversationView({
                         )}
                       </div>
                     )}
+                    {kindIcons[message.kind] && (
+                      <strong className="message-kind">
+                        {(() => {
+                          const Icon = kindIcons[message.kind];
+                          return <Icon size={13} />;
+                        })()}{" "}
+                        {mediaLabels[message.kind]}
+                      </strong>
+                    )}
                     <p>
-                      {message.body ||
-                        (!message.has_media && (
-                          <span className="media-placeholder">
-                            <FileText size={15} />
-                            {message.media_name ||
-                              mediaLabels[message.kind] ||
-                              "Arquivo"}
-                            {message.kind !== "text" && (
-                              <span> · indisponível no Caju</span>
-                            )}
-                          </span>
-                        ))}
+                      {message.body
+                        ? linkify(message.body)
+                        : !message.has_media &&
+                          !kindIcons[message.kind] && (
+                            <span className="media-placeholder">
+                              <FileText size={15} />
+                              {message.media_name ||
+                                mediaLabels[message.kind] ||
+                                "Arquivo"}
+                              {message.kind !== "text" && (
+                                <span> · indisponível no Caju</span>
+                              )}
+                            </span>
+                          )}
                     </p>
                     <footer>
                       <time dateTime={message.sent_at}>
@@ -827,20 +918,8 @@ function ConversationView({
                           ) : (
                             <Clock3 size={13} />
                           )}
-                          <span>
-                            {
-                              (
-                                {
-                                  queued: "Na fila",
-                                  sending: "Enviando",
-                                  uncertain: "Envio sem confirmação",
-                                  failed: "Falhou",
-                                  sent: "Enviada",
-                                  delivered: "Entregue",
-                                  read: "Lida",
-                                } as Record<string, string>
-                              )[message.status]
-                            }
+                          <span title={deliveryHints[message.status]}>
+                            {deliveryLabels[message.status]}
                           </span>
                         </>
                       )}
@@ -919,6 +998,23 @@ function ConversationView({
               <Zap size={15} /> Respostas rápidas
             </button>
           </div>
+          {!internal && own && whatsappStatus !== "connected" && (
+            <p className="composer-notice" role="status">
+              <Smartphone size={15} />
+              <span>
+                {whatsappStatus === "not_configured"
+                  ? "O WhatsApp da empresa ainda não foi conectado. Suas mensagens ficam na fila até a conexão existir."
+                  : whatsappStatus === "connecting" ||
+                      whatsappStatus === "reconnecting" ||
+                      whatsappStatus === "qr_ready"
+                    ? "O WhatsApp está reconectando. Suas mensagens ficam na fila e saem assim que a conexão voltar."
+                    : "O WhatsApp da empresa está desconectado. Suas mensagens ficam na fila até alguém reconectar."}
+              </span>
+              {canManage && (
+                <Link to="/configuracoes/whatsapp">Ver conexão</Link>
+              )}
+            </p>
+          )}
           {!internal && attachment && (
             <div className="composer-attachment">
               <Paperclip size={15} />
