@@ -14,7 +14,7 @@ const querySchema = z.object({
 // Sem contato cadastrado, o nome vem de quem escreveu por último; um JID "@lid"
 // não é telefone, então não vira número na tela.
 const contactColumns = `
-  coalesce(ct.name,(SELECT sender_name FROM messages lm WHERE lm.conversation_id=c.id AND lm.direction='inbound' AND lm.sender_name<>'' ORDER BY lm.sent_at DESC LIMIT 1),
+  coalesce(c.title,ct.name,(SELECT sender_name FROM messages lm WHERE lm.conversation_id=c.id AND lm.direction='inbound' AND lm.sender_name<>'' ORDER BY lm.sent_at DESC LIMIT 1),
     CASE WHEN c.remote_jid LIKE '%@s.whatsapp.net' THEN '+'||split_part(c.remote_jid,'@',1) WHEN c.remote_jid LIKE '%@g.us' THEN 'Grupo' ELSE 'Contato' END) AS contact_name,
   coalesce(ct.phone,CASE WHEN c.remote_jid LIKE '%@s.whatsapp.net' THEN '+'||split_part(split_part(c.remote_jid,'@',1),':',1) END) AS contact_phone`;
 
@@ -29,7 +29,7 @@ export async function inboxRoutes(app: FastifyInstance) {
           m.name AS assignee_name,d.name AS department_name
          FROM conversations c LEFT JOIN contacts ct ON ct.id=c.contact_id LEFT JOIN memberships am ON am.id=c.assignee_id
          LEFT JOIN identities m ON m.id=am.user_id LEFT JOIN departments d ON d.id=c.department_id
-         WHERE ($1='all' OR c.status=$1) AND (coalesce(ct.name,'') ILIKE $2 OR coalesce(ct.phone,'') ILIKE $2 OR c.protocol ILIKE $2 OR c.last_message_preview ILIKE $2)
+         WHERE ($1='all' OR c.status=$1) AND (coalesce(c.title,'') ILIKE $2 OR coalesce(ct.name,'') ILIKE $2 OR coalesce(ct.phone,'') ILIKE $2 OR c.protocol ILIKE $2 OR c.last_message_preview ILIKE $2)
          ORDER BY c.last_message_at DESC NULLS LAST,c.updated_at DESC LIMIT 100`,
         [status, search],
       );

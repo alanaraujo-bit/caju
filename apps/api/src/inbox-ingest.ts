@@ -5,6 +5,7 @@ export type IncomingMessage = {
   externalId: string;
   remoteJid: string;
   phoneJid?: string | null;
+  title?: string | null;
   fromMe: boolean;
   pushName?: string | null;
   kind: string;
@@ -62,8 +63,8 @@ export async function ingestIncomingMessage(
     const conversationId = randomUUID();
     const protocol = `CAJ-${Date.now().toString(36).toUpperCase()}-${conversationId.slice(0, 4).toUpperCase()}`;
     const { rows: inserted } = await db.query(
-      `INSERT INTO conversations(id,tenant_id,whatsapp_connection_id,remote_jid,contact_id,protocol,last_message_at,last_message_preview,last_message_from_me,unread_count)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $10 THEN 1 ELSE 0 END)
+      `INSERT INTO conversations(id,tenant_id,whatsapp_connection_id,remote_jid,contact_id,protocol,last_message_at,last_message_preview,last_message_from_me,unread_count,title)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $10 THEN 1 ELSE 0 END,$11)
        ON CONFLICT(tenant_id,whatsapp_connection_id,remote_jid) DO NOTHING RETURNING id`,
       [
         conversationId,
@@ -76,6 +77,7 @@ export async function ingestIncomingMessage(
         preview(message),
         direction === "outbound",
         direction === "inbound",
+        message.title ?? null,
       ],
     );
     const actualConversationId =
@@ -91,6 +93,11 @@ export async function ingestIncomingMessage(
       await db.query(
         "UPDATE conversations SET contact_id=$1 WHERE id=$2 AND contact_id IS DISTINCT FROM $1",
         [contactId, actualConversationId],
+      );
+    if (message.title)
+      await db.query(
+        "UPDATE conversations SET title=$1 WHERE id=$2 AND title IS DISTINCT FROM $1",
+        [message.title, actualConversationId],
       );
     const { rows } = await db.query(
       `INSERT INTO messages(id,tenant_id,conversation_id,whatsapp_connection_id,external_id,direction,kind,body,media_name,sender_name,sent_at,status,reply_to_external_id)

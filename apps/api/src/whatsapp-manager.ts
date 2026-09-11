@@ -203,32 +203,52 @@ function disconnectCode(error: unknown) {
 
 function messageTimestamp(value: unknown) {
   if (typeof value === "number") return new Date(value * 1000);
-  if (typeof value === "string" && /^\d+$/.test(value)) return new Date(Number(value) * 1000);
-  if (value && typeof value === "object" && "low" in value) return new Date(Number((value as { low: number }).low) * 1000);
+  if (typeof value === "string" && /^\d+$/.test(value))
+    return new Date(Number(value) * 1000);
+  if (value && typeof value === "object" && "low" in value)
+    return new Date(Number((value as { low: number }).low) * 1000);
   return new Date();
 }
 
 function normalizeIncoming(message: any) {
   const content = message?.message;
   if (!message?.key?.id || !message?.key?.remoteJid || !content) return null;
-  const [kind, value] = Object.entries(content).find(([name]) =>
-    ["conversation", "extendedTextMessage", "imageMessage", "videoMessage", "audioMessage", "documentMessage", "stickerMessage"].includes(name),
-  ) ?? [];
+  const [kind, value] =
+    Object.entries(content).find(([name]) =>
+      [
+        "conversation",
+        "extendedTextMessage",
+        "imageMessage",
+        "videoMessage",
+        "audioMessage",
+        "documentMessage",
+        "stickerMessage",
+      ].includes(name),
+    ) ?? [];
   if (!kind) return null;
   const entry = value as any;
-  const body = kind === "conversation" ? String(value ?? "") : entry?.text ?? entry?.caption ?? "";
+  const body =
+    kind === "conversation"
+      ? String(value ?? "")
+      : (entry?.text ?? entry?.caption ?? "");
   return {
     externalId: String(message.key.id),
     remoteJid: String(message.key.remoteJid),
     // Contas novas chegam como "@lid"; o número real vem em remoteJidAlt.
-    phoneJid: message.key.remoteJidAlt ? String(message.key.remoteJidAlt) : null,
+    phoneJid: message.key.remoteJidAlt
+      ? String(message.key.remoteJidAlt)
+      : null,
     fromMe: Boolean(message.key.fromMe),
     pushName: message.pushName ?? null,
-    kind: kind === "conversation" || kind === "extendedTextMessage" ? "text" : kind.replace("Message", "").toLowerCase(),
+    kind:
+      kind === "conversation" || kind === "extendedTextMessage"
+        ? "text"
+        : kind.replace("Message", "").toLowerCase(),
     body: String(body),
     mediaName: entry?.fileName ?? null,
     sentAt: messageTimestamp(message.messageTimestamp),
-    replyToExternalId: message.message?.extendedTextMessage?.contextInfo?.stanzaId ?? null,
+    replyToExternalId:
+      message.message?.extendedTextMessage?.contextInfo?.stanzaId ?? null,
   } as const;
 }
 
@@ -363,13 +383,40 @@ export class BaileysGateway implements WhatsAppGateway {
       });
       connection.socket = socket;
       socket.ev.on("creds.update", saveCreds);
+      // O nome do grupo não vem na mensagem; buscamos uma vez por grupo e guardamos por sessão.
+      const groupTitles = new Map<string, Promise<string | null>>();
+      const groupTitle = (jid: string) => {
+        if (!jid.endsWith("@g.us")) return Promise.resolve(null);
+        if (!groupTitles.has(jid))
+          groupTitles.set(
+            jid,
+            socket
+              .groupMetadata(jid)
+              .then((meta) => meta.subject?.trim() || null)
+              .catch(() => {
+                groupTitles.delete(jid);
+                return null;
+              }),
+          );
+        return groupTitles.get(jid)!;
+      };
       socket.ev.on("messages.upsert", async ({ messages, type }) => {
         if (type === "append" || type === "notify") {
           for (const message of messages) {
             const normalized = normalizeIncoming(message);
             if (normalized)
-              await ingestIncomingMessage(connection.tenantId, connectionId, normalized).catch((error) =>
-                log.error({ err: error, connectionId, externalId: normalized.externalId }, "falha ao registrar mensagem recebida"),
+              await ingestIncomingMessage(connection.tenantId, connectionId, {
+                ...normalized,
+                title: await groupTitle(normalized.remoteJid),
+              }).catch((error) =>
+                log.error(
+                  {
+                    err: error,
+                    connectionId,
+                    externalId: normalized.externalId,
+                  },
+                  "falha ao registrar mensagem recebida",
+                ),
               );
           }
         }
