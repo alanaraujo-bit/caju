@@ -261,8 +261,11 @@ export async function inboxRoutes(
               name: z.string().min(1).max(180),
               base64: z
                 .string()
-                .max(13981016)
-                .regex(/^[A-Za-z0-9+/]+={0,2}$/),
+                .max(13981016, "Escolha um arquivo de até 10 MB.")
+                .regex(
+                  /^[A-Za-z0-9+/]+={0,2}$/,
+                  "O arquivo não pôde ser lido. Escolha-o novamente.",
+                ),
             })
             .optional(),
         })
