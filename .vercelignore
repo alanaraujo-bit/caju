@@ -1,0 +1,10 @@
+.git
+.env*
+.local
+.impeccable
+test-results
+playwright-report
+coverage
+apps/api/dist
+apps/web/dist
+node_modules

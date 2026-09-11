@@ -1,0 +1,27 @@
+{
+  "name": "caju",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "npm run dev -w @caju/web",
+    "dev:api": "npm run dev -w @caju/api",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test -w @caju/api",
+    "test:e2e": "playwright test",
+    "db:migrate": "npm run db:migrate -w @caju/api"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.63.0",
+    "prettier": "^3.9.6",
+    "sharp": "^0.35.4"
+  }
+}
