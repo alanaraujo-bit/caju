@@ -452,6 +452,23 @@ export class BaileysGateway implements WhatsAppGateway {
             profileName: socket.user?.name ?? null,
             attempts: 0,
           });
+          // Grupos registrados antes de conhecermos o nome recebem o assunto agora.
+          void transaction(connection.tenantId, async (db) => {
+            const { rows } = await db.query(
+              "SELECT id,remote_jid FROM conversations WHERE whatsapp_connection_id=$1 AND remote_jid LIKE '%@g.us' AND title IS NULL",
+              [connectionId],
+            );
+            for (const row of rows) {
+              const title = await groupTitle(row.remote_jid);
+              if (title)
+                await db.query(
+                  "UPDATE conversations SET title=$1 WHERE id=$2",
+                  [title, row.id],
+                );
+            }
+          }).catch((error) =>
+            log.warn({ err: error, connectionId }, "falha ao nomear grupos"),
+          );
         }
         if (update.connection === "close")
           await this.handleClose(
