@@ -340,8 +340,16 @@ function Shell() {
                     : "Seu espaço"}
           </span>
           <Link className="connection-state" to="/configuracoes/whatsapp">
-            <span className="status-dot" />
-            WhatsApp não conectado
+            <span
+              className={`status-dot ${workspace.data?.whatsapp.status === "connected" ? "online" : ""}`}
+            />
+            {workspace.data?.whatsapp.status === "connected"
+              ? workspace.data.whatsapp.phone || "WhatsApp conectado"
+              : ["connecting", "qr_ready", "syncing", "reconnecting"].includes(
+                    workspace.data?.whatsapp.status ?? "",
+                  )
+                ? "WhatsApp conectando"
+                : "WhatsApp não conectado"}
             <ArrowUpRight size={14} />
           </Link>
         </header>
@@ -422,7 +430,7 @@ function HomePage() {
       title: "O WhatsApp da sua empresa",
       description: "Conecte o número que seus clientes já conhecem.",
       to: "/configuracoes/whatsapp",
-      done: false,
+      done: workspace.data!.whatsapp.status === "connected",
     },
   ];
   const completed = steps.filter((s) => s.done).length;
@@ -488,10 +496,14 @@ function HomePage() {
               <Smartphone size={22} />
               <h3>Primeiro, a conexão.</h3>
               <p>
-                As conversas aparecem aqui quando o WhatsApp estiver conectado.
+                {workspace.data!.whatsapp.status === "connected"
+                  ? `${workspace.data!.whatsapp.phone || "Seu número"} está pronto para atender.`
+                  : "Escaneie um QR Code e conecte o número que seus clientes já usam."}
               </p>
               <Link to="/configuracoes/whatsapp">
-                Preparar meu WhatsApp
+                {workspace.data!.whatsapp.status === "connected"
+                  ? "Ver conexão"
+                  : "Conectar meu WhatsApp"}
                 <ArrowRight size={16} />
               </Link>
             </div>
@@ -500,10 +512,15 @@ function HomePage() {
       ) : (
         <section className="agent-welcome">
           <MessageSquareText size={36} />
-          <h2>Seu espaço está sendo preparado</h2>
+          <h2>
+            {workspace.data!.whatsapp.status === "connected"
+              ? "Seu WhatsApp está conectado"
+              : "Seu espaço está sendo preparado"}
+          </h2>
           <p>
-            O administrador ainda precisa conectar o WhatsApp da empresa.
-            Enquanto isso, você já pode organizar contatos e retornos.
+            {workspace.data!.whatsapp.status === "connected"
+              ? "A operação está pronta para receber o inbox do Caju. Enquanto isso, você já pode organizar contatos e retornos."
+              : "O administrador ainda precisa conectar o WhatsApp da empresa. Enquanto isso, você já pode organizar contatos e retornos."}
           </p>
           <Link className="button" to="/contatos">
             Ver contatos

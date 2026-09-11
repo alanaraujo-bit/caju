@@ -999,6 +999,9 @@ time {
   border-radius: 50%;
   background: var(--warning);
 }
+.status-dot.online {
+  background: var(--success);
+}
 .connection-state > svg {
   margin-left: 4px;
 }
@@ -1718,6 +1721,257 @@ tr:hover td {
   color: var(--accent);
   margin-bottom: 18px;
 }
+.whatsapp-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(280px, 0.92fr);
+  gap: 54px;
+  padding: 30px 0 34px;
+  align-items: center;
+}
+.whatsapp-intro-copy h3,
+.qr-guidance h3,
+.connection-progress h3,
+.connected-whatsapp h3,
+.connection-attention h3 {
+  font-size: 27px;
+  letter-spacing: -0.03em;
+  margin: 17px 0 11px;
+}
+.whatsapp-intro-copy > p,
+.qr-guidance > p,
+.connection-progress p,
+.connection-attention p {
+  font-size: 14px;
+  max-width: 570px;
+  margin: 0 0 24px;
+}
+.mobile-scan-copy {
+  display: none;
+}
+.connection-steps {
+  list-style: none;
+  margin: 0;
+  padding: 5px 0;
+}
+.connection-steps li {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 14px;
+  padding: 17px 0;
+  border-bottom: 1px solid var(--line);
+}
+.connection-steps li:last-child {
+  border-bottom: 0;
+}
+.connection-steps li > span {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  font-size: 12px;
+  font-weight: 800;
+}
+.connection-steps strong {
+  font-size: 14px;
+}
+.connection-steps p {
+  font-size: 12px;
+  margin: 3px 0 0;
+}
+.qr-connect-layout {
+  display: grid;
+  grid-template-columns: 330px minmax(0, 1fr);
+  gap: 52px;
+  padding: 24px 0 35px;
+  align-items: center;
+}
+.qr-stage {
+  text-align: center;
+  position: relative;
+}
+.mobile-qr-helper {
+  display: none;
+}
+.qr-frame {
+  width: 292px;
+  height: 292px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto;
+  background: #fff;
+  border-radius: 16px;
+  position: relative;
+  box-shadow: 0 15px 38px color-mix(in srgb, var(--text) 11%, transparent);
+}
+.qr-frame::before,
+.qr-frame::after {
+  content: "";
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  pointer-events: none;
+}
+.qr-frame::before {
+  left: -5px;
+  top: -5px;
+  background:
+    linear-gradient(var(--accent), var(--accent)) top left / 32px 3px no-repeat,
+    linear-gradient(var(--accent), var(--accent)) top left / 3px 32px no-repeat;
+}
+.qr-frame::after {
+  right: -5px;
+  bottom: -5px;
+  background:
+    linear-gradient(var(--accent), var(--accent)) bottom right / 32px 3px
+      no-repeat,
+    linear-gradient(var(--accent), var(--accent)) bottom right / 3px 32px
+      no-repeat;
+}
+.qr-mark {
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 8px #241f2224;
+}
+.qr-mark img {
+  width: 35px;
+  height: 35px;
+  border-radius: 8px;
+}
+.qr-timer {
+  font-size: 12px;
+  min-height: 18px;
+  margin-top: 16px;
+}
+.qr-timer .urgent {
+  color: var(--warning);
+  font-weight: 750;
+}
+.privacy-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 500px;
+  padding: 17px 0 21px;
+  border-top: 1px solid var(--line);
+}
+.privacy-line svg {
+  flex: 0 0 auto;
+  color: var(--success);
+}
+.connection-progress,
+.connection-attention {
+  min-height: 310px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 35px 5%;
+}
+.connection-pulse,
+.attention-symbol,
+.connected-symbol {
+  width: 64px;
+  height: 64px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 15px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.connection-pulse {
+  animation: connection-pulse 1.8s ease-in-out infinite;
+}
+@keyframes connection-pulse {
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 7px 24px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+}
+.connection-attention .attention-symbol {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.connected-whatsapp {
+  padding: 24px 0 34px;
+}
+.connected-primary {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding-bottom: 27px;
+  border-bottom: 1px solid var(--line);
+}
+.connected-primary h3 {
+  margin: 0 0 3px;
+}
+.connected-primary p {
+  font-size: 14px;
+  margin: 0;
+}
+.connected-symbol {
+  color: var(--success);
+  background: var(--success-bg);
+}
+.live-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 750;
+  color: var(--success);
+}
+.live-state i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.connection-facts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0;
+}
+.connection-facts > div {
+  padding: 24px 20px 24px 0;
+  border-bottom: 1px solid var(--line);
+}
+.connection-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.connection-facts dd {
+  font-size: 14px;
+  font-weight: 750;
+  margin: 5px 0 0;
+}
+.connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 22px;
+}
+.button.quiet-danger {
+  color: var(--error);
+  background: transparent;
+}
+.button.quiet-danger:hover {
+  color: var(--error);
+  background: var(--error-bg);
+}
+.whatsapp-policy-note {
+  margin-top: 11px;
+}
 .whatsapp-setup h3 {
   font-size: 27px;
   margin-top: 19px;
@@ -2040,6 +2294,13 @@ tr:hover td {
   .settings-layout {
     display: block;
   }
+  .whatsapp-intro {
+    gap: 30px;
+  }
+  .qr-connect-layout {
+    grid-template-columns: 300px 1fr;
+    gap: 32px;
+  }
   .settings-nav {
     flex-direction: row;
     overflow: auto;
@@ -2241,6 +2502,7 @@ tr:hover td {
   }
   .page-heading {
     margin-bottom: 27px;
+    scroll-padding-inline: 20px;
     align-items: flex-start;
     flex-wrap: wrap;
     gap: 18px;
@@ -2575,6 +2837,80 @@ tr:hover td {
   }
   .whatsapp-setup h3 {
     font-size: 26px;
+  }
+  .whatsapp-intro,
+  .qr-connect-layout {
+    display: block;
+    padding-top: 8px;
+  }
+  .whatsapp-intro-copy h3,
+  .qr-guidance h3,
+  .connection-progress h3,
+  .connected-whatsapp h3,
+  .connection-attention h3 {
+    font-size: 24px;
+  }
+  .connection-steps {
+    margin-top: 28px;
+  }
+  .qr-stage {
+    margin: 7px 0 31px;
+  }
+  .mobile-qr-helper {
+    display: block;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -29px;
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .qr-frame {
+    width: 238px;
+    height: 238px;
+  }
+  .qr-frame svg {
+    width: 202px;
+    height: 202px;
+  }
+  .qr-mark {
+    width: 38px;
+    height: 38px;
+  }
+  .qr-mark img {
+    width: 31px;
+    height: 31px;
+  }
+  .desktop-scan-copy {
+    display: none;
+  }
+  .mobile-scan-copy {
+    display: inline;
+  }
+  .connection-progress,
+  .connection-attention {
+    min-height: 350px;
+    padding: 30px 0;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .connected-primary {
+    grid-template-columns: 55px minmax(0, 1fr);
+  }
+  .connected-symbol {
+    width: 55px;
+    height: 55px;
+  }
+  .live-state {
+    grid-column: 2;
+  }
+  .connection-facts {
+    grid-template-columns: 1fr;
+  }
+  .connection-facts > div {
+    padding: 17px 0;
   }
   .whatsapp-setup > p {
     font-size: 14px;

@@ -103,10 +103,17 @@ export async function workspaceRoutes(app: FastifyInstance) {
       return {
         company,
         counts,
-        whatsapp: {
-          status: "not_configured",
-          message: "Conecte um número para começar a receber mensagens.",
-        },
+        whatsapp: await db
+          .query(
+            "SELECT status,phone,profile_name,last_error_message FROM whatsapp_connections ORDER BY created_at LIMIT 1",
+          )
+          .then(
+            ({ rows }) =>
+              rows[0] ?? {
+                status: "not_configured",
+                message: "Conecte um número para começar a receber mensagens.",
+              },
+          ),
       };
     }),
   );

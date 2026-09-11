@@ -7,7 +7,12 @@ import { pool } from "./db.js";
 import { AppError } from "./security.js";
 import { authRoutes } from "./auth.js";
 import { workspaceRoutes } from "./workspace.js";
-export async function buildApp(logging = false) {
+import { whatsappRoutes } from "./whatsapp.js";
+import type { WhatsAppGateway } from "./whatsapp-manager.js";
+export async function buildApp(
+  logging = false,
+  whatsappGateway: WhatsAppGateway | null = null,
+) {
   const app = Fastify({
     logger: logging
       ? {
@@ -108,5 +113,6 @@ export async function buildApp(logging = false) {
   });
   await authRoutes(app);
   await workspaceRoutes(app);
+  await whatsappRoutes(app, whatsappGateway);
   return app;
 }

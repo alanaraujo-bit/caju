@@ -47,6 +47,105 @@ test("empresa, configurações, contato, retorno, temas e sessão funcionam de p
     .waitFor();
   await page.getByRole("button", { name: "Salvar alterações" }).click();
   await expect(page.getByText("Alterações salvas")).toBeVisible();
+  await page.goto("/configuracoes/whatsapp");
+  await expect(
+    page.getByRole("button", { name: "Conectar com QR Code" }),
+  ).toBeVisible();
+  const workspaceBody = await page.evaluate(() =>
+    fetch("/api/workspace", { credentials: "include" }).then((response) =>
+      response.json(),
+    ),
+  );
+  await page.route("**/api/whatsapp/connections", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          id: "1fc85866-d85d-4e36-870d-76cd28adbe71",
+          label: "WhatsApp principal",
+          status: "qr_ready",
+          phone: null,
+          profile_name: null,
+          connected_at: null,
+          last_seen_at: null,
+          last_error_message: null,
+          reconnect_attempts: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          qr: "2@L1xihT9sQw5w0vQ8o7jF23YzYjP5mA1bC2dE3fG4hI5jK6lM7nO8pQ9rS0tU=,placeholder-for-rendering-only",
+          qrExpiresAt: new Date(Date.now() + 55_000).toISOString(),
+        },
+      ]),
+    });
+  });
+  await page.route("**/api/workspace", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      json: { ...workspaceBody, whatsapp: { status: "qr_ready" } },
+    });
+  });
+  await page.reload();
+  await expect(
+    page.getByRole("heading", {
+      name:
+        testInfo.project.name === "mobile"
+          ? "Use outro aparelho para escanear."
+          : "Agora, escaneie com o celular.",
+    }),
+  ).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({
+    path: `.impeccable/review/whatsapp-qr-${testInfo.project.name}.png`,
+    fullPage: true,
+  });
+  await page.unroute("**/api/whatsapp/connections");
+  await page.unroute("**/api/workspace");
+  await page.route("**/api/whatsapp/connections", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          id: "1fc85866-d85d-4e36-870d-76cd28adbe71",
+          label: "WhatsApp principal",
+          status: "connected",
+          phone: "+55 11 98888-7777",
+          profile_name: "Empresa de validação",
+          connected_at: new Date().toISOString(),
+          last_seen_at: new Date().toISOString(),
+          last_error_message: null,
+          reconnect_attempts: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          qr: null,
+          qrExpiresAt: null,
+        },
+      ]),
+    });
+  });
+  await page.route("**/api/workspace", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      json: {
+        ...workspaceBody,
+        whatsapp: { status: "connected", phone: "+55 11 98888-7777" },
+      },
+    });
+  });
+  await page.reload();
+  await expect(page.getByText("Operando normalmente")).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({
+    path: `.impeccable/review/whatsapp-connected-${testInfo.project.name}.png`,
+    fullPage: true,
+  });
+  await page.unroute("**/api/whatsapp/connections");
+  await page.unroute("**/api/workspace");
   await page.goto("/configuracoes/etiquetas");
   await page.getByRole("button", { name: "Nova etiqueta" }).click();
   await page.getByLabel("Nome da etiqueta").fill("Cliente recorrente");

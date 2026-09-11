@@ -57,6 +57,9 @@ export async function migrate(
     await db.query(
       "GRANT EXECUTE ON FUNCTION auth_memberships(uuid), auth_invitation(text) TO caju_app",
     );
+    await db.query(
+      "GRANT EXECUTE ON FUNCTION whatsapp_resume_targets() TO caju_app",
+    );
   } finally {
     await db.query("SELECT pg_advisory_unlock(740219)").catch(() => {});
     await db.end();

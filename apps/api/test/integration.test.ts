@@ -11,6 +11,30 @@ const admin = new pg.Client({
   connectionTimeoutMillis: 10000,
 });
 let app: FastifyInstance;
+const whatsappStates = new Map<
+  string,
+  { status: string; qr: string | null; qrExpiresAt: string | null }
+>();
+const whatsappGateway = {
+  async start(_tenantId: string, connectionId: string) {
+    whatsappStates.set(connectionId, {
+      status: "qr_ready",
+      qr: "qr-de-teste",
+      qrExpiresAt: new Date(Date.now() + 55_000).toISOString(),
+    });
+  },
+  async reconnect(tenantId: string, connectionId: string) {
+    await this.start(tenantId, connectionId);
+  },
+  async remove(_tenantId: string, connectionId: string) {
+    whatsappStates.delete(connectionId);
+  },
+  state(connectionId: string) {
+    return whatsappStates.get(connectionId);
+  },
+  async resumeAll() {},
+  async close() {},
+};
 let pool: pg.Pool;
 let tx: typeof import("../src/db.js").transaction;
 const passwords = "Uma senha bastante segura 2026!";
@@ -57,7 +81,7 @@ before(async () => {
   pool = db.pool;
   tx = db.transaction;
   await db.assertDatabaseRole();
-  app = await (await import("../src/app.js")).buildApp();
+  app = await (await import("../src/app.js")).buildApp(false, whatsappGateway);
 });
 after(async () => {
   await app?.close();
@@ -151,6 +175,39 @@ test("onboarding persistido e validação de horários", async () => {
     (await call("PATCH", "/api/workspace", { settings: invalid }, a))
       .statusCode,
     400,
+  );
+});
+test("conexão por QR respeita permissão, tenant e limite do plano", async () => {
+  let r = await call("POST", "/api/whatsapp/connections", undefined, a);
+  assert.equal(r.statusCode, 201, r.body);
+  const connectionId = r.json().id;
+  let list = (
+    await call("GET", "/api/whatsapp/connections", undefined, a)
+  ).json();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, connectionId);
+  assert.equal(list[0].qr, "qr-de-teste");
+  assert.equal(
+    (await call("POST", "/api/whatsapp/connections", undefined, a)).statusCode,
+    409,
+  );
+  list = (await call("GET", "/api/whatsapp/connections", undefined, b)).json();
+  assert.equal(list.length, 0);
+  assert.equal(
+    (
+      await call(
+        "DELETE",
+        `/api/whatsapp/connections/${connectionId}`,
+        undefined,
+        a,
+      )
+    ).statusCode,
+    200,
+  );
+  assert.equal(
+    (await call("GET", "/api/whatsapp/connections", undefined, a)).json()
+      .length,
+    0,
   );
 });
 test("contatos e etiquetas persistem, filtros e edição funcionam", async () => {
@@ -294,6 +351,11 @@ test("convite é aceito uma vez, gera sessão real e restringe o atendente", asy
   });
   assert.equal(accepted.statusCode, 200, accepted.body);
   agent = session(accepted);
+  assert.equal(
+    (await call("GET", "/api/whatsapp/connections", undefined, agent))
+      .statusCode,
+    403,
+  );
   assert.equal(
     (await call("GET", `/api/auth/invitation?token=${raw}`)).statusCode,
     404,

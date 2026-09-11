@@ -24,7 +24,7 @@ Desktop é o ambiente principal. Mobile tem navegação própria e PWA. Portugu�
 
 ## Capabilities and Constraints
 
-Multiempresa desde a primeira migration; permissões granulares; autenticação real; isolamento de todos os dados operacionais; planos e limites. Inbox em tempo real, atendimento, contatos, retornos, mensagens rápidas, supervisão, métricas, automações essenciais e auditoria compõem o escopo integral. Nenhum canal adicional, marketplace ou API pública como produto.
+Multiempresa desde a primeira migration; permissões granulares; autenticação real; isolamento de todos os dados operacionais; planos e limites. A conexão principal usa QR Code e vincula o Caju como aparelho multidispositivo do WhatsApp já utilizado pela empresa; a API oficial permanece uma alternativa futura. Inbox em tempo real, atendimento, contatos, retornos, mensagens rápidas, supervisão, métricas, automações essenciais e auditoria compõem o escopo integral. Nenhum canal adicional, marketplace ou API pública como produto.
 
 ## Brand Commitments
 
@@ -32,7 +32,7 @@ Nome Caju. Mascote aprovado fornecido pelo proprietário: caju amarelo com heads
 
 ## Evidence on Hand
 
-Repositório remoto originalmente vazio em 10/09/2026. GitHub, Railway e Vercel autenticados. Nenhum cliente, métrica, depoimento ou conversa disponível. Não inventar. Domínio comercial, credenciais Meta e remetente de e-mail são pendências externas.
+Repositório remoto originalmente vazio em 10/09/2026. GitHub, Railway e Vercel autenticados. Nenhum cliente, métrica, depoimento ou conversa disponível. Não inventar. Domínio comercial e remetente de e-mail são pendências externas.
 
 ## Product Principles
 

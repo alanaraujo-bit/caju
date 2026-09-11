@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-11T03:50:06.1593010Z",
+  "title": "Design System: Caju",
+  "extensions": {
+    "shadows": [
+      {
+        "name": "qr-lift",
+        "value": "0 15px 38px color-mix(in srgb, var(--text) 11%, transparent)",
+        "purpose": "Separa o quadro branco do QR das superfícies claras e escuras sem transformar o restante do fluxo em uma coleção de cards."
+      }
+    ],
+    "motion": [
+      {
+        "name": "connection-pulse",
+        "value": "1.8s ease-in-out infinite",
+        "purpose": "Sinaliza conexão, sincronização ou reconexão em andamento; é removido quando a pessoa prefere movimento reduzido."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "whatsapp-mobile",
+        "value": "700px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Quadro de conexão por QR",
+      "kind": "custom",
+      "description": "Assinatura visual do vínculo com WhatsApp: código de alto contraste, cantos coral, marca central discreta, validade e orientação contextual.",
+      "html": "<section class=\"ds-whatsapp-qr\"><div class=\"ds-qr-stage\"><p class=\"ds-mobile-qr-helper\">Escaneie com outro celular</p><div class=\"ds-qr-frame\" aria-label=\"Exemplo visual de QR Code\"><span class=\"ds-qr-pattern\" aria-hidden=\"true\"></span><span class=\"ds-qr-brand\" aria-hidden=\"true\">Caju</span></div><p class=\"ds-qr-timer\">Renova em 42s</p></div><div class=\"ds-qr-guidance\"><span class=\"ds-qr-badge\">Aguardando leitura</span><strong>Agora, escaneie com o celular.</strong><p>No WhatsApp, abra Configurações → Aparelhos conectados e toque em Conectar aparelho.</p></div></section>",
+      "css": ".ds-whatsapp-qr { display: grid; grid-template-columns: 292px minmax(0, 1fr); gap: 52px; align-items: center; color: var(--text); font-family: 'Nunito Sans Variable', sans-serif; } .ds-qr-stage { position: relative; text-align: center; } .ds-mobile-qr-helper { display: none; } .ds-qr-frame { width: 292px; height: 292px; display: grid; place-items: center; position: relative; background: #fff; border-radius: 16px; box-shadow: 0 15px 38px color-mix(in srgb, var(--text) 11%, transparent); } .ds-qr-frame::before, .ds-qr-frame::after { content: ''; position: absolute; width: 32px; height: 32px; pointer-events: none; } .ds-qr-frame::before { left: -5px; top: -5px; background: linear-gradient(var(--accent), var(--accent)) top left / 32px 3px no-repeat, linear-gradient(var(--accent), var(--accent)) top left / 3px 32px no-repeat; } .ds-qr-frame::after { right: -5px; bottom: -5px; background: linear-gradient(var(--accent), var(--accent)) bottom right / 32px 3px no-repeat, linear-gradient(var(--accent), var(--accent)) bottom right / 3px 32px no-repeat; } .ds-qr-pattern { width: 244px; height: 244px; background: repeating-conic-gradient(#241f22 0 25%, #fff 0 50%) 0 0 / 14px 14px; border: 10px solid #fff; } .ds-qr-brand { position: absolute; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 10px; background: #fff; color: var(--accent); font-size: 10px; font-weight: 800; box-shadow: 0 2px 8px #241f2224; } .ds-qr-timer { margin: 16px 0 0; color: var(--muted); text-align: center; font-size: 12px; } .ds-qr-guidance { min-width: 0; } .ds-qr-badge { display: inline-flex; padding: 3px 8px; border-radius: 999px; background: var(--warning-bg); color: var(--warning); font-size: 12px; font-weight: 750; } .ds-qr-guidance strong { display: block; margin: 17px 0 11px; font-size: 27px; line-height: 1.2; letter-spacing: -0.03em; } .ds-qr-guidance p { max-width: 500px; margin: 0; color: var(--muted); font-size: 14px; } @media (max-width: 700px) { .ds-whatsapp-qr { display: block; } .ds-qr-stage { margin: 7px 0 31px; } .ds-mobile-qr-helper { display: block; position: absolute; left: 0; right: 0; top: -29px; margin: 0; color: var(--muted); font-size: 12px; font-weight: 700; } .ds-qr-frame { width: 238px; height: 238px; margin: 0 auto; } .ds-qr-pattern { width: 202px; height: 202px; } .ds-qr-brand { width: 38px; height: 38px; } .ds-qr-guidance strong { font-size: 24px; } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Balcão de atendimento organizado",
+    "overview": "O Caju se comporta como um balcão de atendimento organizado: o próximo passo é óbvio, o estado aparece perto da ação e a interface mantém espaço para trabalhar por horas. A marca vive no mascote, no coral e na voz cuidadosa; as telas operacionais permanecem calmas.",
+    "keyCharacteristics": [
+      "QR branco de alto contraste com cantos coral geométricos e marca central discreta.",
+      "Estados distintos e observáveis da preparação à remoção.",
+      "Composição lateral no desktop e sequência vertical orientada no celular."
+    ],
+    "rules": [
+      {
+        "name": "QR Legível",
+        "body": "Contraste, área de respiro e integridade do código têm prioridade sobre decoração: o fundo branco e o primeiro plano quase preto não recebem tonalização do tema, os cantos coral ficam fora da área codificada e a marca central nunca domina nem encobre os padrões de leitura.",
+        "section": "components"
+      },
+      {
+        "name": "Confirmação Observável",
+        "body": "Ler o QR inicia o processo, mas nunca comunica sucesso por si só. A interface só declara conexão quando o estado persistido confirma a operação; enquanto isso, progresso, sincronização e reconexão usam mensagens próprias e recuperáveis.",
+        "section": "components"
+      }
+    ],
+    "dos": [],
+    "donts": []
+  }
+}

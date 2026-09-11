@@ -33,6 +33,12 @@ Contatos e retornos possuem índices alinhados às consultas atuais. Listas usam
 
 A PWA guarda somente a tela offline e a imagem da marca. Documentos autenticados e respostas da API nunca entram no cache do service worker.
 
-## Integração WhatsApp planejada
+## Gateway WhatsApp por QR Code
 
-A integração oficial terá credenciais cifradas, verificação de assinatura do webhook, idempotência por ID externo, inbox/outbox persistentes, ordenação por timestamp do canal, reconciliação de entrega, mídia em armazenamento privado e eventos de conexão observáveis. Nenhuma tela de inbox será liberada antes desse ciclo funcionar com um número real.
+O caminho principal vincula o Caju como aparelho multidispositivo por meio do Baileys 7. As credenciais e chaves Signal são serializadas com suporte a buffers e cifradas individualmente com AES-256-GCM antes de chegar ao PostgreSQL. `WHATSAPP_SESSION_KEY` permanece somente no serviço. O QR existe apenas na memória e expira rapidamente; nunca é persistido nem escrito em logs.
+
+O gateway mantém uma conexão por número e restaura sessões ativas depois de reinícios. Uma concessão distribuída de 45 segundos, renovada a cada 15 segundos no PostgreSQL, impede duas instâncias sobrepostas durante deploys de controlarem o mesmo número. Uma varredura periódica assume sessões abandonadas quando a concessão expira. Quedas transitórias usam reconexão exponencial com jitter. Logout, sessão inválida e bloqueio tornam-se estados de atenção que exigem novo QR, em vez de ciclos silenciosos. O banco guarda estado, telefone, erro humano e tentativas para diagnóstico. Todos os registros continuam sob RLS; uma função `SECURITY DEFINER` limitada retorna somente tenant e ID necessários para a retomada no boot.
+
+Esta conexão usa um cliente não oficial de WhatsApp Web e pode ser afetada por mudanças ou restrições do WhatsApp. Por isso, não existe promessa técnica de conexão ininterrupta. O produto prioriza atendimento receptivo, impede disparos indiscriminados por desenho e mantém a integração oficial como alternativa futura.
+
+O próximo ciclo adiciona idempotência por ID externo, inbox/outbox persistentes, ordenação pelo timestamp do canal, reconciliação de entrega, mídia privada e eventos observáveis. A tela de inbox só será liberada quando esse ciclo funcionar com um número real.

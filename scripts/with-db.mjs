@@ -29,6 +29,7 @@ const env = {
   APP_URL: "http://127.0.0.1:5173",
   PORT: "3001",
   NODE_ENV: "test",
+  WHATSAPP_SESSION_KEY: Buffer.alloc(32, 17).toString("base64"),
 };
 let admin, testName;
 if (mode === "e2e") {

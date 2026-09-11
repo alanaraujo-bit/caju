@@ -34,6 +34,7 @@ API:
 - `APP_URL`: origens permitidas, separadas por vírgula.
 - `PORT`: fornecida pelo Railway.
 - `NODE_ENV=production`.
+- `WHATSAPP_SESSION_KEY`: 32 bytes aleatórios em base64; cifra credenciais e chaves do aparelho vinculado. Rotação exige um procedimento de recifragem e nunca deve ser feita apagando o valor antigo.
 - `SMTP_URL` e `MAIL_FROM`: habilitam recuperação por e-mail.
 
 `MIGRATION_DATABASE_URL` não deve permanecer no serviço da API. Ela pertence ao procedimento de migration.
@@ -58,6 +59,6 @@ Antes da liberação comercial, habilitar backups/PITR compatíveis com o plano 
 
 - domínio comercial e DNS;
 - remetente SMTP verificado;
-- conta Meta e número na API oficial do WhatsApp;
+- número real de WhatsApp para o gate de conexão, mensagens e mídia;
 - políticas comerciais de planos, retenção e suporte;
 - monitoramento externo e alertas de plantão.

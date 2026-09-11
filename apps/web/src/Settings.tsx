@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Link, NavLink, Outlet } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -8,22 +8,27 @@ import {
   CheckCheck,
   Clock3,
   Copy,
-  ExternalLink,
   History,
   KeyRound,
   Monitor,
   Palette,
   Plus,
+  QrCode,
+  RefreshCw,
   Settings,
   ShieldCheck,
+  Signal,
   Smartphone,
   Tag as TagIcon,
   Trash2,
   UserRound,
   Users,
   Waypoints,
+  Wifi,
+  WifiOff,
   X,
 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import {
   api,
   defaultSettings,
@@ -34,6 +39,7 @@ import {
   type Settings as CompanyConfig,
   type Tag,
   type Session,
+  type WhatsAppConnection,
 } from "./api";
 import { can, useSession, useWorkspace } from "./App";
 import {
@@ -61,18 +67,27 @@ function Forbidden() {
   );
 }
 export function SettingsLayout() {
-  const { user } = useSession();
+  const { user } = useSession(),
+    location = useLocation(),
+    nav = useRef<HTMLElement>(null);
   const tabs = [
     ["empresa", "Empresa", Building2, "company:manage"],
     ["equipe", "Equipe", Users, "team:manage"],
     ["departamentos", "Departamentos", Waypoints, "departments:manage"],
     ["horarios", "Horários", Clock3, "company:manage"],
-    ["whatsapp", "WhatsApp", Smartphone, ""],
+    ["whatsapp", "WhatsApp", Smartphone, "whatsapp:manage"],
     ["etiquetas", "Etiquetas", TagIcon, "company:manage"],
     ["aparencia", "Aparência", Palette, ""],
     ["conta", "Minha conta", UserRound, ""],
     ["historico", "Histórico de ações", History, "audit:read"],
   ] as const;
+  useEffect(() => {
+    nav.current?.querySelector("a.active")?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "start",
+    });
+  }, [location.pathname]);
   return (
     <div className="page settings-page">
       <PageTitle
@@ -80,7 +95,11 @@ export function SettingsLayout() {
         description="Um espaço que funciona do seu jeito."
       />
       <div className="settings-layout">
-        <nav className="settings-nav" aria-label="Seções de configurações">
+        <nav
+          ref={nav}
+          className="settings-nav"
+          aria-label="Seções de configurações"
+        >
           {tabs
             .filter((t) => !t[3] || can(user, t[3]))
             .map(([path, label, Icon]) => (
@@ -699,6 +718,69 @@ export function HoursSettings() {
   );
 }
 export function WhatsAppSettings() {
+  const { user } = useSession(),
+    client = useQueryClient(),
+    [working, setWorking] = useState(false),
+    [error, setError] = useState<unknown>(),
+    [remove, setRemove] = useState<WhatsAppConnection | null>(null),
+    [seconds, setSeconds] = useState(0);
+  const connections = useQuery({
+    queryKey: ["whatsapp-connections"],
+    queryFn: () => api<WhatsAppConnection[]>("/whatsapp/connections"),
+    refetchInterval: (query) => {
+      const status = query.state.data?.[0]?.status;
+      return ["connecting", "qr_ready", "syncing", "reconnecting"].includes(
+        status ?? "",
+      )
+        ? 1500
+        : 15000;
+    },
+  });
+  const connection = connections.data?.[0];
+  useEffect(() => {
+    if (!connection?.qrExpiresAt) return setSeconds(0);
+    const update = () =>
+      setSeconds(
+        Math.max(
+          0,
+          Math.ceil(
+            (new Date(connection.qrExpiresAt!).getTime() - Date.now()) / 1000,
+          ),
+        ),
+      );
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [connection?.qrExpiresAt]);
+  useEffect(() => {
+    if (connection?.status)
+      void client.invalidateQueries({ queryKey: ["workspace"] });
+  }, [client, connection?.status]);
+  if (!can(user, "whatsapp:manage")) return <Forbidden />;
+  if (connections.isPending) return <Loading />;
+  if (connections.error)
+    return (
+      <Retry error={connections.error} retry={() => connections.refetch()} />
+    );
+  async function act(operation: () => Promise<unknown>) {
+    setWorking(true);
+    setError(undefined);
+    try {
+      await operation();
+      await Promise.all([
+        connections.refetch(),
+        client.invalidateQueries({ queryKey: ["workspace"] }),
+      ]);
+    } catch (reason) {
+      setError(reason);
+    } finally {
+      setWorking(false);
+    }
+  }
+  const status = connection?.status ?? "not_configured";
+  const isConnecting = ["connecting", "syncing", "reconnecting"].includes(
+    status,
+  );
   return (
     <>
       <div className="section-heading">
@@ -707,52 +789,275 @@ export function WhatsAppSettings() {
           <p>O ponto de encontro entre seus clientes e sua equipe.</p>
         </div>
       </div>
-      <section className="whatsapp-setup">
-        <span className="channel-icon">
-          <Smartphone size={32} />
-        </span>
-        <Badge color="amber">Não conectado</Badge>
-        <h3>Vamos preparar a conexão.</h3>
-        <p>
-          O Caju utilizará a integração oficial do WhatsApp Business. A conexão
-          está em implementação e ainda não recebe nem envia mensagens.
-        </p>
-        <div className="prerequisites">
-          <h4>O que sua empresa precisa ter</h4>
-          <div>
-            <Check size={18} />
-            <span>Uma conta empresarial na Meta.</span>
+      {status === "not_configured" && (
+        <section className="whatsapp-intro">
+          <div className="whatsapp-intro-copy">
+            <span className="channel-icon" aria-hidden="true">
+              <QrCode size={34} />
+            </span>
+            <h3>Seu WhatsApp, pronto em poucos minutos.</h3>
+            <p>
+              Use o mesmo número que sua empresa já atende. O celular continua
+              funcionando normalmente e o Caju mantém a sessão protegida para
+              retomar a conexão depois de reinícios.
+            </p>
+            <button
+              className="button"
+              disabled={working}
+              onClick={() =>
+                act(() => api("/whatsapp/connections", { method: "POST" }))
+              }
+            >
+              {working ? (
+                <RefreshCw className="spin" size={17} />
+              ) : (
+                <QrCode size={17} />
+              )}
+              {working ? "Preparando QR Code…" : "Conectar com QR Code"}
+            </button>
           </div>
-          <div>
-            <Check size={18} />
-            <span>Um número habilitado para a API do WhatsApp Business.</span>
+          <ol className="connection-steps" aria-label="Como conectar">
+            <li>
+              <span>1</span>
+              <div>
+                <strong>Abra o WhatsApp no celular</strong>
+                <p>Entre em Aparelhos conectados nas configurações.</p>
+              </div>
+            </li>
+            <li>
+              <span>2</span>
+              <div>
+                <strong>Toque em Conectar aparelho</strong>
+                <p>O WhatsApp abrirá a câmera com segurança.</p>
+              </div>
+            </li>
+            <li>
+              <span>3</span>
+              <div>
+                <strong>Aponte para o QR Code</strong>
+                <p>O Caju confirma quando a sincronização terminar.</p>
+              </div>
+            </li>
+          </ol>
+        </section>
+      )}
+      {status === "qr_ready" && connection?.qr && (
+        <section className="qr-connect-layout" aria-live="polite">
+          <div className="qr-stage">
+            <p className="mobile-qr-helper">Escaneie com outro celular</p>
+            <div className="qr-frame">
+              <QRCodeSVG
+                value={connection.qr}
+                size={244}
+                level="M"
+                marginSize={1}
+                bgColor="#ffffff"
+                fgColor="#241f22"
+                title="QR Code para conectar o WhatsApp"
+              />
+              <span className="qr-mark" aria-hidden="true">
+                <img src="/brand/caju.png" alt="" />
+              </span>
+            </div>
+            <p className="qr-timer">
+              <span className={seconds < 15 ? "urgent" : ""}>
+                {seconds > 0 ? `Renova em ${seconds}s` : "Renovando QR Code…"}
+              </span>
+            </p>
           </div>
-          <div>
-            <Check size={18} />
-            <span>Acesso de administrador para autorizar a conexão.</span>
+          <div className="qr-guidance">
+            <Badge color="amber">Aguardando leitura</Badge>
+            <h3>
+              <span className="desktop-scan-copy">
+                Agora, escaneie com o celular.
+              </span>
+              <span className="mobile-scan-copy">
+                Use outro aparelho para escanear.
+              </span>
+            </h3>
+            <p>
+              <span className="desktop-scan-copy">
+                No WhatsApp, abra{" "}
+                <strong>Configurações → Aparelhos conectados</strong> e toque em{" "}
+                <strong>Conectar aparelho</strong>.
+              </span>
+              <span className="mobile-scan-copy">
+                Deixe este QR aberto. No outro celular, entre em{" "}
+                <strong>Configurações → Aparelhos conectados</strong> e toque em{" "}
+                <strong>Conectar aparelho</strong>. Se você só tem um celular,
+                abra o Caju em um computador.
+              </span>
+            </p>
+            <div className="privacy-line">
+              <ShieldCheck size={20} />
+              <span>
+                O QR Code é temporário. As chaves da sessão são criptografadas
+                antes de serem salvas.
+              </span>
+            </div>
+            <button
+              className="button secondary small"
+              disabled={working}
+              onClick={() =>
+                act(() =>
+                  api(`/whatsapp/connections/${connection.id}/reconnect`, {
+                    method: "POST",
+                  }),
+                )
+              }
+            >
+              <RefreshCw size={15} />
+              Gerar outro QR Code
+            </button>
           </div>
-        </div>
-        <a
-          className="button secondary"
-          href="https://business.facebook.com/"
-          target="_blank"
-          rel="noreferrer"
-        >
-          Abrir Meta Business
-          <ExternalLink size={16} />
-        </a>
-      </section>
-      <div className="notice info">
+        </section>
+      )}
+      {isConnecting && (
+        <section className="connection-progress" role="status">
+          <span className="connection-pulse">
+            <Signal size={30} />
+          </span>
+          <div>
+            <h3>
+              {status === "reconnecting"
+                ? "Recuperando a conexão…"
+                : status === "syncing"
+                  ? "Organizando suas conversas…"
+                  : "Preparando uma conexão segura…"}
+            </h3>
+            <p>
+              {status === "reconnecting"
+                ? "Você não precisa fazer nada. O Caju está tentando voltar sozinho."
+                : "Isso costuma levar apenas alguns segundos. Pode deixar esta página aberta."}
+            </p>
+          </div>
+        </section>
+      )}
+      {status === "connected" && connection && (
+        <section className="connected-whatsapp">
+          <div className="connected-primary">
+            <span className="connected-symbol" aria-hidden="true">
+              <Wifi size={30} />
+            </span>
+            <div>
+              <h3>{connection.profile_name || "WhatsApp principal"}</h3>
+              <p>{connection.phone || "Número conectado"}</p>
+            </div>
+            <span className="live-state">
+              <i /> Operando normalmente
+            </span>
+          </div>
+          <dl className="connection-facts">
+            <div>
+              <dt>Conectado desde</dt>
+              <dd>
+                {connection.connected_at
+                  ? date(connection.connected_at)
+                  : "Agora"}
+              </dd>
+            </div>
+            <div>
+              <dt>Retomada automática</dt>
+              <dd>Ativa</dd>
+            </div>
+            <div>
+              <dt>Sessão protegida</dt>
+              <dd>Criptografada</dd>
+            </div>
+          </dl>
+          <div className="connection-actions">
+            <button
+              className="button secondary small"
+              disabled={working}
+              onClick={() =>
+                act(() =>
+                  api(`/whatsapp/connections/${connection.id}/reconnect`, {
+                    method: "POST",
+                  }),
+                )
+              }
+            >
+              <RefreshCw size={15} />
+              Reconectar agora
+            </button>
+            <button
+              className="button quiet-danger small"
+              onClick={() => setRemove(connection)}
+            >
+              <WifiOff size={15} />
+              Remover conexão
+            </button>
+          </div>
+        </section>
+      )}
+      {["attention", "error", "disconnected"].includes(status) &&
+        connection && (
+          <section className="connection-attention">
+            <span className="attention-symbol">
+              <WifiOff size={29} />
+            </span>
+            <div>
+              <Badge color="amber">Atenção necessária</Badge>
+              <h3>Este número precisa ser conectado novamente.</h3>
+              <p>
+                {connection.last_error_message ||
+                  "A sessão não está mais disponível. Gere um novo QR Code para retomar o atendimento."}
+              </p>
+              <div className="connection-actions">
+                <button
+                  className="button"
+                  disabled={working}
+                  onClick={() =>
+                    act(() =>
+                      api(`/whatsapp/connections/${connection.id}/reconnect`, {
+                        method: "POST",
+                      }),
+                    )
+                  }
+                >
+                  <QrCode size={16} />
+                  Conectar novamente
+                </button>
+                <button
+                  className="button quiet-danger"
+                  onClick={() => setRemove(connection)}
+                >
+                  Remover número
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+      <ErrorMessage error={error} />
+      <div className="notice info whatsapp-policy-note">
         <ShieldCheck size={19} />
         <span>
-          Não é necessário informar tokens ou senhas da Meta por conversa. A
-          autorização será feita pelo fluxo seguro de conexão.
+          Este modo conecta o Caju como um aparelho vinculado. Use apenas para
+          atendimento solicitado pelo cliente; disparos em massa e mensagens não
+          autorizadas podem causar restrições no número.
         </span>
       </div>
       <Link className="text-link" to="/">
         Voltar à preparação da empresa
         <ArrowRight size={16} />
       </Link>
+      {remove && (
+        <Confirm
+          title="Remover este WhatsApp?"
+          description="O Caju encerrará a sessão neste aparelho e apagará as chaves protegidas. Para usar o número novamente, será necessário escanear outro QR Code."
+          label="Remover conexão"
+          danger
+          onClose={() => setRemove(null)}
+          onConfirm={() =>
+            act(async () => {
+              await api(`/whatsapp/connections/${remove.id}`, {
+                method: "DELETE",
+              });
+              setRemove(null);
+            })
+          }
+        />
+      )}
     </>
   );
 }

@@ -42,6 +42,7 @@ export const roles: Record<string, string[]> = {
     "followups:read",
     "followups:write",
     "audit:read",
+    "whatsapp:manage",
   ],
   supervisor: [
     "contacts:read",

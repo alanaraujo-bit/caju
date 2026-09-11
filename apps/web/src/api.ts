@@ -81,7 +81,28 @@ export type Workspace = {
     contacts: number;
     invitations: number;
   };
-  whatsapp: { status: string; message: string };
+  whatsapp: {
+    status: string;
+    message?: string;
+    phone?: string;
+    profile_name?: string;
+    last_error_message?: string;
+  };
+};
+export type WhatsAppConnection = {
+  id: string;
+  label: string;
+  status: string;
+  phone: string | null;
+  profile_name: string | null;
+  connected_at: string | null;
+  last_seen_at: string | null;
+  last_error_message: string | null;
+  reconnect_attempts: number;
+  created_at: string;
+  updated_at: string;
+  qr: string | null;
+  qrExpiresAt: string | null;
 };
 export type Department = {
   id: string;
