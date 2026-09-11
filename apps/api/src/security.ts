@@ -43,18 +43,23 @@ export const roles: Record<string, string[]> = {
     "followups:write",
     "audit:read",
     "whatsapp:manage",
+    "inbox:read",
+    "inbox:manage",
   ],
   supervisor: [
     "contacts:read",
     "contacts:write",
     "followups:read",
     "followups:write",
+    "inbox:read",
+    "inbox:manage",
   ],
   agent: [
     "contacts:read",
     "contacts:write",
     "followups:read",
     "followups:write",
+    "inbox:read",
   ],
 };
 export function permissions(role: string, extra: string[]) {

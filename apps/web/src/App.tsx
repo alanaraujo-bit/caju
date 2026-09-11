@@ -51,6 +51,7 @@ import {
   Confirm,
 } from "./ui";
 import { Auth } from "./Auth";
+import { Inbox } from "./Inbox";
 import {
   Contacts,
   ContactEditor,
@@ -89,6 +90,7 @@ export function App() {
       <Route path="/convite" element={<Auth />} />
       <Route element={<Authenticated />}>
         <Route index element={<HomePage />} />
+        <Route path="inbox" element={<Inbox />} />
         <Route path="contatos" element={<Contacts />} />
         <Route path="contatos/novo" element={<ContactEditor />} />
         <Route path="contatos/:id" element={<ContactEditor />} />
@@ -207,6 +209,7 @@ function Shell() {
   }, [navigate]);
   const links = [
     { to: "/", icon: Home, label: "Início" },
+    { to: "/inbox", icon: MessageSquareText, label: "Atendimento" },
     { to: "/contatos", icon: ContactRound, label: "Contatos" },
     { to: "/retornos", icon: CalendarClock, label: "Retornos" },
     { to: "/respostas", icon: MessageSquareText, label: "Respostas rápidas" },
@@ -331,7 +334,9 @@ function Shell() {
           <span className="desktop-top">
             {location.pathname.startsWith("/configuracoes")
               ? "Configurações"
-              : location.pathname.startsWith("/contatos")
+              : location.pathname.startsWith("/inbox")
+                ? "Atendimento"
+                : location.pathname.startsWith("/contatos")
                 ? "Relacionamento"
                 : location.pathname.startsWith("/retornos")
                   ? "Acompanhamento"

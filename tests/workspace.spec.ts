@@ -29,6 +29,12 @@ test("empresa, configurações, contato, retorno, temas e sessão funcionam de p
     path: `.impeccable/review/${testInfo.project.name}.png`,
     fullPage: true,
   });
+  await page.goto("/inbox");
+  await expect(page.getByRole("heading", { name: "Atendimento", exact: true })).toBeVisible();
+  await expect(page.getByText("Sua fila está tranquila")).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({ path: `.impeccable/review/inbox-${testInfo.project.name}.png`, fullPage: true });
+  await page.goto("/");
   await page.getByRole("link", { name: /Cada assunto no lugar certo/ }).click();
   await page
     .getByRole("button", { name: "Criar departamento", exact: true })

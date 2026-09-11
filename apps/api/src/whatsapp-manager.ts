@@ -16,6 +16,7 @@ import makeWASocket, {
 } from "baileys";
 import pino from "pino";
 import { pool, transaction } from "./db.js";
+import { ingestIncomingMessage } from "./inbox-ingest.js";
 
 export type WhatsAppRuntimeState = {
   status: string;
@@ -44,6 +45,7 @@ type LiveConnection = {
 };
 
 const silentLogger = pino({ level: "silent" });
+const log = pino({ name: "whatsapp" });
 
 function encryptionKey() {
   const raw = process.env.WHATSAPP_SESSION_KEY;
@@ -199,6 +201,35 @@ function disconnectCode(error: unknown) {
   return shaped?.output?.statusCode ?? shaped?.data?.statusCode ?? 0;
 }
 
+function messageTimestamp(value: unknown) {
+  if (typeof value === "number") return new Date(value * 1000);
+  if (typeof value === "string" && /^\d+$/.test(value)) return new Date(Number(value) * 1000);
+  if (value && typeof value === "object" && "low" in value) return new Date(Number((value as { low: number }).low) * 1000);
+  return new Date();
+}
+
+function normalizeIncoming(message: any) {
+  const content = message?.message;
+  if (!message?.key?.id || !message?.key?.remoteJid || !content) return null;
+  const [kind, value] = Object.entries(content).find(([name]) =>
+    ["conversation", "extendedTextMessage", "imageMessage", "videoMessage", "audioMessage", "documentMessage", "stickerMessage"].includes(name),
+  ) ?? [];
+  if (!kind) return null;
+  const entry = value as any;
+  const body = kind === "conversation" ? String(value ?? "") : entry?.text ?? entry?.caption ?? "";
+  return {
+    externalId: String(message.key.id),
+    remoteJid: String(message.key.remoteJid),
+    fromMe: Boolean(message.key.fromMe),
+    pushName: message.pushName ?? null,
+    kind: kind === "conversation" || kind === "extendedTextMessage" ? "text" : kind.replace("Message", "").toLowerCase(),
+    body: String(body),
+    mediaName: entry?.fileName ?? null,
+    sentAt: messageTimestamp(message.messageTimestamp),
+    replyToExternalId: message.message?.extendedTextMessage?.contextInfo?.stanzaId ?? null,
+  } as const;
+}
+
 export class BaileysGateway implements WhatsAppGateway {
   private live = new Map<string, LiveConnection>();
   private readonly workerId = randomUUID();
@@ -330,6 +361,17 @@ export class BaileysGateway implements WhatsAppGateway {
       });
       connection.socket = socket;
       socket.ev.on("creds.update", saveCreds);
+      socket.ev.on("messages.upsert", async ({ messages, type }) => {
+        if (type === "append" || type === "notify") {
+          for (const message of messages) {
+            const normalized = normalizeIncoming(message);
+            if (normalized)
+              await ingestIncomingMessage(connection.tenantId, connectionId, normalized).catch((error) =>
+                log.error({ err: error, connectionId, externalId: normalized.externalId }, "falha ao registrar mensagem recebida"),
+              );
+          }
+        }
+      });
       socket.ev.on("connection.update", async (update) => {
         if (
           connection.stopped ||

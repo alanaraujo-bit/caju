@@ -8,6 +8,7 @@ import { AppError } from "./security.js";
 import { authRoutes } from "./auth.js";
 import { workspaceRoutes } from "./workspace.js";
 import { whatsappRoutes } from "./whatsapp.js";
+import { inboxRoutes } from "./inbox.js";
 import type { WhatsAppGateway } from "./whatsapp-manager.js";
 export async function buildApp(
   logging = false,
@@ -114,5 +115,6 @@ export async function buildApp(
   await authRoutes(app);
   await workspaceRoutes(app);
   await whatsappRoutes(app, whatsappGateway);
+  await inboxRoutes(app);
   return app;
 }

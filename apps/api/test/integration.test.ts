@@ -5,6 +5,7 @@ import pg from "pg";
 import type { FastifyInstance } from "fastify";
 import { SMTPServer } from "smtp-server";
 import { migrate } from "../src/migrate.js";
+import { ingestIncomingMessage } from "../src/inbox-ingest.js";
 const testName = `caju_test_${randomUUID().replaceAll("-", "")}`;
 const admin = new pg.Client({
   connectionString: process.env.MIGRATION_DATABASE_URL,
@@ -209,6 +210,29 @@ test("conexão por QR respeita permissão, tenant e limite do plano", async () =
       .length,
     0,
   );
+});
+test("mensagens recebidas criam inbox idempotente e respeitam tenant", async () => {
+  const connectionId = randomUUID();
+  await tx(tenantA, (db) => db.query(
+    "INSERT INTO whatsapp_connections(id,tenant_id,label,status) VALUES($1,$2,'Inbox de teste','connected')",
+    [connectionId, tenantA],
+  ));
+  const sentAt = new Date("2026-09-11T12:00:00.000Z");
+  const first = await ingestIncomingMessage(tenantA, connectionId, {
+    externalId: "wamid-test-1", remoteJid: "5511991112222@s.whatsapp.net", fromMe: false,
+    pushName: "Cliente Inbox", kind: "text", body: "Olá, preciso de ajuda", sentAt,
+  });
+  const duplicate = await ingestIncomingMessage(tenantA, connectionId, {
+    externalId: "wamid-test-1", remoteJid: "5511991112222@s.whatsapp.net", fromMe: false,
+    pushName: "Cliente Inbox", kind: "text", body: "Olá, preciso de ajuda", sentAt,
+  });
+  assert.equal(first?.duplicate, false);
+  assert.equal(duplicate?.duplicate, true);
+  const inbox = (await call("GET", "/api/inbox?q=Inbox", undefined, a)).json();
+  assert.equal(inbox.items.length, 1);
+  assert.equal(inbox.items[0].unread_count, 1);
+  assert.equal((await call("POST", `/api/inbox/${first?.conversationId}/read`, {}, a)).statusCode, 200);
+  assert.equal((await call("GET", "/api/inbox", undefined, b)).json().items.length, 0);
 });
 test("contatos e etiquetas persistem, filtros e edição funcionam", async () => {
   let r = await call(
